@@ -2,10 +2,12 @@ import { AudioEngine } from './audio/engine.js';
 import { VisualRenderer } from './visual/renderer.js';
 import { PerceptualAudioTuner } from './visual/perceptual.js';
 import { Visualizer } from './visual/visualizer.js';
+import { HighDimRenderer } from './visual/highdim.js';
 import { SignalPipeline } from './engine/pipeline.js';
 import { GoldCodeGenerator } from './signal/gold-codes.js';
 import { SeedCrystal } from './engine/seed-crystal.js';
 import { SensorHarvester } from './engine/sensor-harvest.js';
+import { PublicDataStream } from './engine/public-stream.js';
 
 // ================================================================
 // Mode management
@@ -46,6 +48,8 @@ class PerceptualMode {
     this.tuner = null;
     this.crystal = new SeedCrystal();
     this.harvester = new SensorHarvester();
+    this.publicStream = new PublicDataStream();
+    this.highDim = null;
     this.running = false;
     this._rafId = null;
     this._lastTime = 0;
@@ -67,7 +71,9 @@ class PerceptualMode {
 
     const canvas = document.getElementById('cv-perceptual');
     this.renderer = new Visualizer(canvas);
+    this.highDim = new HighDimRenderer(canvas);
     this.tuner = new PerceptualAudioTuner(audio);
+    this.publicStream.start();
 
     window.addEventListener('resize', () => this.renderer.resize());
     this.renderer.resize();
@@ -99,6 +105,7 @@ class PerceptualMode {
     this._rafId = null;
     if (this.tuner) this.tuner.deactivate();
     this.harvester.stopAll();
+    this.publicStream.stop();
     if (audio) audio.suspend();
   }
 
@@ -126,6 +133,18 @@ class PerceptualMode {
 
     // Update the scrolling description text
     this.renderer.setTextStream(this.crystal.buildDescriptionText());
+
+    // Feed identity into high-dim renderer (camera position in projection space)
+    if (this.highDim) {
+      this.highDim.setIdentityVector(
+        this.crystal.otpSeeds,
+        this.crystal.deviceUUID,
+        seed
+      );
+      if (ch) {
+        this.highDim.setCodeState(Array.from(ch.code), Array.from(bits));
+      }
+    }
 
     this._lastSeed = seed;
   }
@@ -346,6 +365,16 @@ class PerceptualMode {
       }
     }
 
+    // Feed public data into high-dim renderer (renders as background layer)
+    const highDimActive = this.highDim && this.renderer.layers.highDim?.enabled;
+    if (highDimActive) {
+      this.highDim.setPublicVector(this.publicStream.sample());
+      this.highDim.opacity = this.renderer.layers.highDim.opacity;
+      this.highDim.render(dt);
+    }
+
+    // Visualizer draws on top; skip its background clear if high-dim drew
+    this.renderer.skipBackground = highDimActive;
     this.renderer.render(dt, timeDomain, frequency);
     this._rafId = requestAnimationFrame(() => this._renderLoop());
   }
