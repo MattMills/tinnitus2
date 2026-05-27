@@ -22,14 +22,15 @@ export class Visualizer {
 
     // Layer definitions — each can be toggled, scaled, opacity-adjusted
     this.layers = {
-      grid:        { enabled: true,  opacity: 0.6, scale: 1.0, gridSize: 16 },
-      rings:       { enabled: true,  opacity: 0.5, scale: 1.0, ringCount: 5 },
-      codeCircle:  { enabled: true,  opacity: 0.5, scale: 1.0 },
-      waveformRing:{ enabled: true,  opacity: 0.5, scale: 1.0 },
-      spirals:     { enabled: true,  opacity: 0.4, scale: 1.0, armCount: 3 },
-      particles:   { enabled: false, opacity: 0.4, scale: 1.0, count: 128 },
-      bars:        { enabled: false, opacity: 0.5, scale: 1.0 },
-      lissajous:   { enabled: false, opacity: 0.5, scale: 1.0 },
+      grid:        { enabled: true,  opacity: 0.7, scale: 1.0, gridSize: 16 },
+      rings:       { enabled: true,  opacity: 0.6, scale: 1.0, ringCount: 5 },
+      codeCircle:  { enabled: true,  opacity: 0.6, scale: 1.0 },
+      waveformRing:{ enabled: true,  opacity: 0.6, scale: 1.0 },
+      spirals:     { enabled: true,  opacity: 0.5, scale: 1.0, armCount: 3 },
+      particles:   { enabled: true,  opacity: 0.5, scale: 1.0, count: 128 },
+      bars:        { enabled: true,  opacity: 0.5, scale: 1.0 },
+      lissajous:   { enabled: true,  opacity: 0.5, scale: 1.0 },
+      timeClock:   { enabled: true,  opacity: 0.8, scale: 1.0 },
       textStream:  { enabled: true,  opacity: 0.7, scale: 1.0 },
       highDim:     { enabled: true,  opacity: 0.8, scale: 1.0 },
       colorRef:    { enabled: true,  opacity: 0.9, scale: 1.0 },
@@ -67,6 +68,8 @@ export class Visualizer {
   }
 
   setCoherence(v) { this._coherence = v; }
+
+  setEntropyInfo(info) { this._entropyInfo = info; }
 
   setLayerEnabled(name, enabled) {
     if (this.layers[name]) this.layers[name].enabled = enabled;
@@ -139,6 +142,8 @@ export class Visualizer {
       this._drawWaveformRing(ctx, w, h, audioTimeDomain);
     if (this.layers.colorRef.enabled)
       this._drawColorRef(ctx, w, h, code, chipPhase, breath);
+    if (this.layers.timeClock.enabled)
+      this._drawTimeClock(ctx, w, h, code);
     if (this.layers.textStream.enabled)
       this._drawTextStream(ctx, w, h, code, chipPhase);
 
@@ -498,6 +503,100 @@ export class Visualizer {
     ctx.globalAlpha = 1;
   }
 
+  // --- Layer: Time Clock (sine-wave encoded timestamp) ---
+  // Each time component (hours, minutes, seconds, 100ms, 10ms) becomes a
+  // sine wave at its own base frequency.  The frequencies cross-modulate:
+  // each wave's frequency is shifted by the phase of adjacent waves.
+  // The result is a stack of oscillating bands that are visually periodic
+  // (obviously structured against the entropic background) but whose
+  // inter-frequency beating encodes the timestamp redundantly — any 3 of
+  // the 7 bands can reconstruct the full time via the cross-modulation.
+  _drawTimeClock(ctx, w, h, code) {
+    const L = this.layers.timeClock;
+    const now = Date.now();
+    const d = new Date(now);
+
+    // Decompose time into components, each normalized to [0, 1)
+    const components = [
+      { val: d.getHours() / 24,                        period: 1.0,   label: 'H'  },
+      { val: d.getMinutes() / 60,                      period: 2.3,   label: 'M'  },
+      { val: d.getSeconds() / 60,                      period: 4.7,   label: 'S'  },
+      { val: (now % 1000) / 1000,                      period: 7.1,   label: 'ms' },
+      { val: ((now % 10000) / 10000),                  period: 11.3,  label: '10s'},
+      { val: d.getDay() / 7,                           period: 13.7,  label: 'D'  },
+      { val: (d.getMonth() + d.getDate() / 31) / 12,   period: 17.9,  label: 'Y'  },
+    ];
+
+    const bandH = (h * 0.5 * L.scale) / components.length;
+    const topY = h * 0.25 - (components.length * bandH) / 2 + h * 0.25;
+    const centerX = w / 2;
+
+    ctx.globalAlpha = L.opacity;
+
+    for (let i = 0; i < components.length; i++) {
+      const c = components[i];
+      const y = topY + i * bandH;
+
+      // Cross-modulation: this wave's frequency is shifted by neighbors
+      const prevVal = components[(i + components.length - 1) % components.length].val;
+      const nextVal = components[(i + 1) % components.length].val;
+      const freqMod = 1 + (prevVal - 0.5) * 0.4 + (nextVal - 0.5) * 0.3;
+
+      // Draw the sine wave across the width
+      ctx.beginPath();
+      for (let px = 0; px < w; px++) {
+        const t = px / w;
+        // Base sine at the component's period
+        const baseSine = Math.sin(t * Math.PI * 2 * c.period * freqMod + c.val * Math.PI * 2);
+        // Amplitude modulated by the code
+        const cIdx = code ? (px + i * 7) % code.length : 0;
+        const chip = code ? code[cIdx] : 0;
+        const amp = bandH * 0.35 * (0.6 + chip * 0.4);
+
+        const py = y + bandH / 2 + baseSine * amp;
+        if (px === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+
+      // Color: hue from component value, shifts with time
+      const hue = (c.val * 360 + i * 50 + this._time * 5) % 360;
+      ctx.strokeStyle = `hsla(${hue}, 70%, 55%, 0.7)`;
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // FEC redundancy: draw a second wave at half frequency (redundant encoding)
+      ctx.beginPath();
+      for (let px = 0; px < w; px++) {
+        const t = px / w;
+        const fecSine = Math.sin(t * Math.PI * 2 * c.period * freqMod * 0.5 + c.val * Math.PI * 4);
+        const cIdx = code ? (px + i * 13 + 3) % code.length : 0;
+        const chip = code ? code[cIdx] : 0;
+        const amp = bandH * 0.2 * (0.5 + chip * 0.5);
+        const py = y + bandH / 2 + fecSine * amp;
+        if (px === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.strokeStyle = `hsla(${(hue + 180) % 360}, 50%, 45%, 0.3)`;
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+
+      // Label
+      ctx.fillStyle = `hsla(${hue}, 60%, 60%, 0.5)`;
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'right';
+      ctx.fillText(c.label, w - 4, y + bandH / 2 + 3);
+    }
+
+    // Timestamp text in the center, subtle
+    ctx.font = `${11 * L.scale}px monospace`;
+    ctx.textAlign = 'center';
+    ctx.fillStyle = 'rgba(255,255,255,0.25)';
+    const ts = d.toISOString().slice(11, 23);
+    ctx.fillText(ts, centerX, topY - 4);
+
+    ctx.globalAlpha = 1;
+  }
+
   // --- Layer: Text Stream (topmost — announces what this is) ---
   _drawTextStream(ctx, w, h, code, chipPhase) {
     if (this._textLines.length === 0) return;
@@ -540,14 +639,31 @@ export class Visualizer {
 
   // --- Coherence indicator ---
   _drawCoherence(ctx, w, h) {
-    const barW = w * 0.3;
-    const x = (w - barW) / 2;
-    const y = h - 16;
-    ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    ctx.fillRect(x, y, barW, 2);
+    // Coherence bar
+    const barW = w * 0.25;
+    const barX = (w - barW) / 2;
+    const barY = h - 12;
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(barX, barY, barW, 2);
     const fillW = barW * Math.min(1, this._coherence);
     ctx.fillStyle = `hsl(${120 * this._coherence}, 80%, 50%)`;
-    ctx.fillRect(x, y, fillW, 2);
+    ctx.fillRect(barX, barY, fillW, 2);
+
+    // Timestamp + entropy fingerprint at bottom
+    ctx.font = '10px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+
+    // Left: timestamp
+    const now = new Date();
+    const ts = now.toISOString().replace('T', ' ').slice(0, 23);
+    ctx.textAlign = 'left';
+    ctx.fillText(ts, 6, h - 3);
+
+    // Right: entropy fingerprint
+    if (this._entropyInfo) {
+      ctx.textAlign = 'right';
+      ctx.fillText(this._entropyInfo, w - 6, h - 3);
+    }
   }
 
   _hue(gx, gy, chip, coarse) {

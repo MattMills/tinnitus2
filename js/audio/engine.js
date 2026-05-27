@@ -175,6 +175,92 @@ export class AudioEngine {
     this.oscillators.splice(idx, 1);
   }
 
+  // --- Clock signal: 7 sine oscillators encoding the timestamp ---
+  // Each time component maps to a base frequency band. The frequency
+  // continuously varies with the component's value and is cross-modulated
+  // by neighboring components. The result is a continuously variable
+  // continuous signal that encodes time at every scale.
+  initClockOscillators(gain = 0.03) {
+    if (this._clockOscs) return;
+    this._clockOscs = [];
+    this._clockGain = this.ctx.createGain();
+    this._clockGain.gain.value = gain;
+    this._clockGain.connect(this.masterGain);
+
+    // Base frequencies chosen to be in different perceptual bands
+    // and harmonically unrelated (prime-ratio-ish)
+    const baseFreqs = [
+      130,   // H  — low bass
+      233,   // M  — mid-bass
+      349,   // S  — mid
+      523,   // ms — upper mid
+      784,   // 10s — high mid
+      1175,  // D  — presence
+      1760,  // Y  — high
+    ];
+
+    for (let i = 0; i < 7; i++) {
+      const osc = this.ctx.createOscillator();
+      osc.type = 'sine';
+      osc.frequency.value = baseFreqs[i];
+      const oscGain = this.ctx.createGain();
+      oscGain.gain.value = 1.0 / 7;
+      osc.connect(oscGain);
+      oscGain.connect(this._clockGain);
+      osc.start();
+      this._clockOscs.push({ osc, gain: oscGain, baseFreq: baseFreqs[i] });
+    }
+  }
+
+  updateClockFrequencies() {
+    if (!this._clockOscs || !this.ctx) return;
+    const now = Date.now();
+    const d = new Date(now);
+    const t = this.ctx.currentTime;
+
+    const components = [
+      d.getHours() / 24,
+      d.getMinutes() / 60,
+      d.getSeconds() / 60 + (now % 1000) / 60000, // smooth sub-second
+      (now % 1000) / 1000,
+      (now % 10000) / 10000,
+      d.getDay() / 7,
+      (d.getMonth() + d.getDate() / 31) / 12,
+    ];
+
+    for (let i = 0; i < this._clockOscs.length; i++) {
+      const c = this._clockOscs[i];
+      const val = components[i];
+      const prevVal = components[(i + 6) % 7];
+      const nextVal = components[(i + 1) % 7];
+
+      // Cross-modulation: frequency shifts by neighbors
+      const crossMod = 1 + (prevVal - 0.5) * 0.15 + (nextVal - 0.5) * 0.1;
+      // Value maps to ±20% of base frequency
+      const freq = c.baseFreq * crossMod * (0.8 + val * 0.4);
+
+      c.osc.frequency.setTargetAtTime(freq, t, 0.05);
+    }
+  }
+
+  setClockGain(value) {
+    if (this._clockGain) this._clockGain.gain.value = value;
+  }
+
+  destroyClockOscillators() {
+    if (!this._clockOscs) return;
+    for (const c of this._clockOscs) {
+      c.osc.stop();
+      c.osc.disconnect();
+      c.gain.disconnect();
+    }
+    this._clockOscs = null;
+    if (this._clockGain) {
+      this._clockGain.disconnect();
+      this._clockGain = null;
+    }
+  }
+
   getTimeDomainData() {
     if (!this.analyser) return null;
     this.analyser.getFloatTimeDomainData(this._timeDomainData);
@@ -198,6 +284,7 @@ export class AudioEngine {
   }
 
   destroy() {
+    this.destroyClockOscillators();
     this.oscillators.forEach(o => { try { o.osc.stop(); o.osc.disconnect(); } catch(e) {} });
     this.oscillators = [];
     if (this.noiseNode) { this.noiseNode.disconnect(); this.noiseNode = null; }

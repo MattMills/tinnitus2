@@ -139,6 +139,7 @@ class PerceptualMode {
     this._applyIdentity();
     this._updateCrystalDisplay();
     this.tuner.activate();
+    audio.initClockOscillators(0.03);
 
     // Init multi-layer audio engine
     this.audioLayers = new AudioLayerEngine(audio.ctx);
@@ -267,10 +268,23 @@ class PerceptualMode {
     const lines = [];
     for (const [name, s] of Object.entries(status)) {
       const icon = s.active ? '●' : '○';
-      const bits = s.bitsHarvested > 1024 ? `${(s.bitsHarvested / 1024).toFixed(1)}kb` : `${s.bits}b`;
+      const b = s.bitsHarvested || 0;
+      const bits = b > 1024 ? `${(b / 1024).toFixed(1)}kb` : `${b}b`;
       lines.push(`<span style="color:${s.active ? 'var(--accent)' : 'var(--text-dim)'}">${icon} ${s.label}: ${bits}</span>`);
     }
     el.innerHTML = lines.join('<br>');
+
+    // Uncheck toggles for sources that failed to start
+    document.querySelectorAll('[data-sensor-toggle]').forEach(checkbox => {
+      const src = status[checkbox.dataset.sensorToggle];
+      if (src && src.enabled && !src.active && src.bitsHarvested === 0) {
+        // Give it 3 seconds to start before unchecking
+        if (this._time > 3) {
+          checkbox.checked = false;
+          this.harvester.setSourceEnabled(checkbox.dataset.sensorToggle, false);
+        }
+      }
+    });
   }
 
   _bindControls() {
@@ -481,6 +495,14 @@ class PerceptualMode {
         label.textContent = `Coherence: ${pct}%`;
       }
     }
+
+    // Update clock oscillator frequencies (continuous timestamp encoding)
+    if (audio) audio.updateClockFrequencies();
+
+    // Build entropy fingerprint string for display
+    const poolHash = this.harvester.getPoolEntropy().toString(16).padStart(8, '0');
+    const entropyInfo = `pool:${poolHash} coh:${(this._coherenceSmooth * 100).toFixed(0)}%`;
+    if (this.renderer?.setEntropyInfo) this.renderer.setEntropyInfo(entropyInfo);
 
     // Render based on active mode
     const pubSample = this.publicStream ? this.publicStream.sample() : null;
