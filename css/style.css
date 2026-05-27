@@ -60,16 +60,22 @@ html, body {
 }
 
 .launch-modes {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+@media (max-width: 400px) {
+  .launch-modes {
+    grid-template-columns: 1fr;
+  }
 }
 
 .launch-btn {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 20px;
+  padding: 16px 12px;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-panel);
