@@ -1,4 +1,17 @@
 // Audio engine — manages Web Audio context, noise generators, tone oscillators, and DSSS modulator
+//
+// Audio graph architecture:
+//
+//   NoiseNode → noiseGain ─→ modulatorGain ─→ masterGain → analyser → destination
+//                              ↑ (gain param)
+//                           dsssNode
+//
+//   Oscillators → oscGain ──→ masterGain
+//
+// The DSSS signal modulates the noise (amplitude modulation) rather than
+// being an additive parallel path.  This means the spreading code shapes
+// the noise itself — the code IS the noise structure.  A small direct
+// DSSS path is available for engineering/debug but defaults to off.
 
 export class AudioEngine {
   constructor() {
@@ -7,7 +20,9 @@ export class AudioEngine {
     this.noiseNode = null;
     this.noiseGain = null;
     this.dsssNode = null;
-    this.dsssGain = null;
+    this.modulatorGain = null;     // noise passes through here; DSSS controls its gain
+    this.directDsssGain = null;    // optional additive DSSS (off by default)
+    this.modulationDepth = null;   // GainNode scaling DSSS before it hits the modulator param
     this.oscillators = [];
     this.analyser = null;
     this.running = false;
@@ -44,20 +59,38 @@ export class AudioEngine {
     this.noiseNode = new AudioWorkletNode(this.ctx, 'noise-processor');
     this.noiseGain = this.ctx.createGain();
     this.noiseGain.gain.value = 0.3;
+
+    // Modulator: noise flows through this gain node.
+    // DSSS signal is connected to its .gain AudioParam,
+    // so output = noise * (baseGain + dsssSignal * depth).
+    this.modulatorGain = this.ctx.createGain();
+    this.modulatorGain.gain.value = 1.0; // baseline: noise passes at unity
+
     this.noiseNode.connect(this.noiseGain);
-    this.noiseGain.connect(this.masterGain);
+    this.noiseGain.connect(this.modulatorGain);
+    this.modulatorGain.connect(this.masterGain);
   }
 
   _initDSSS() {
     this.dsssNode = new AudioWorkletNode(this.ctx, 'dsss-processor');
-    this.dsssGain = this.ctx.createGain();
-    this.dsssGain.gain.value = 0.2;
-    this.dsssNode.connect(this.dsssGain);
-    this.dsssGain.connect(this.masterGain);
+
+    // Modulation depth: scales the DSSS signal before it hits the modulator gain param.
+    // At depth=0 the noise is unmodulated. At depth=0.3 the noise gain oscillates ±30%.
+    this.modulationDepth = this.ctx.createGain();
+    this.modulationDepth.gain.value = 0.3;
+
+    // DSSS → depth scaler → modulatorGain.gain (AudioParam)
+    this.dsssNode.connect(this.modulationDepth);
+    this.modulationDepth.connect(this.modulatorGain.gain);
+
+    // Direct additive DSSS path (for engineering mode / debug). Off by default.
+    this.directDsssGain = this.ctx.createGain();
+    this.directDsssGain.gain.value = 0.0;
+    this.dsssNode.connect(this.directDsssGain);
+    this.directDsssGain.connect(this.masterGain);
   }
 
   setNoiseType(type) {
-    // 0=white, 1=pink, 2=brown
     if (this.noiseNode) {
       this.noiseNode.port.postMessage({ type });
     }
@@ -67,8 +100,19 @@ export class AudioEngine {
     if (this.noiseGain) this.noiseGain.gain.value = value;
   }
 
+  // How deeply the DSSS code modulates the noise (0 = none, 1 = full ±100%)
+  setModulationDepth(value) {
+    if (this.modulationDepth) this.modulationDepth.gain.value = value;
+  }
+
+  // Direct additive DSSS gain (for engineering mode; 0 = off)
+  setDirectDsssGain(value) {
+    if (this.directDsssGain) this.directDsssGain.gain.value = value;
+  }
+
+  // Legacy name kept for compatibility — controls modulation depth
   setDSSSGain(value) {
-    if (this.dsssGain) this.dsssGain.gain.value = value;
+    this.setModulationDepth(value);
   }
 
   setMasterGain(value) {
@@ -84,6 +128,12 @@ export class AudioEngine {
   sendDataStream(data) {
     if (this.dsssNode) {
       this.dsssNode.port.postMessage({ dataStream: Array.from(data) });
+    }
+  }
+
+  clearDSSS() {
+    if (this.dsssNode) {
+      this.dsssNode.port.postMessage({ spreadingCode: null, dataStream: null });
     }
   }
 
@@ -148,11 +198,20 @@ export class AudioEngine {
   }
 
   destroy() {
-    this.oscillators.forEach(o => { o.osc.stop(); o.osc.disconnect(); });
+    this.oscillators.forEach(o => { try { o.osc.stop(); o.osc.disconnect(); } catch(e) {} });
     this.oscillators = [];
-    if (this.noiseNode) this.noiseNode.disconnect();
-    if (this.dsssNode) this.dsssNode.disconnect();
-    if (this.ctx) this.ctx.close();
+    if (this.noiseNode) { this.noiseNode.disconnect(); this.noiseNode = null; }
+    if (this.dsssNode) { this.dsssNode.disconnect(); this.dsssNode = null; }
+    if (this.modulatorGain) { this.modulatorGain.disconnect(); this.modulatorGain = null; }
+    if (this.directDsssGain) { this.directDsssGain.disconnect(); this.directDsssGain = null; }
+    if (this.modulationDepth) { this.modulationDepth.disconnect(); this.modulationDepth = null; }
+    if (this.noiseGain) { this.noiseGain.disconnect(); this.noiseGain = null; }
+    if (this.masterGain) { this.masterGain.disconnect(); this.masterGain = null; }
+    if (this.analyser) { this.analyser.disconnect(); this.analyser = null; }
+    if (this.ctx) {
+      this.ctx.close().catch(() => {});
+      this.ctx = null;
+    }
     this.running = false;
   }
 }

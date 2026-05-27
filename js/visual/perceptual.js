@@ -220,24 +220,25 @@ export class PerceptualRenderer {
 }
 
 // Audio tuner for perceptual mode — generates audio matched to visual pattern
+// The DSSS code modulates the noise (amplitude modulation) so the code
+// IS the noise structure.  No separate chirp — the spreading code shapes
+// the noise envelope at the chip rate.
 export class PerceptualAudioTuner {
   constructor(audioEngine) {
     this.engine = audioEngine;
-    this._noiseGain = 0.15;
-    this._toneGain = 0.08;
-    this._dsssGain = 0.12;
-    this._binauralOffset = 4; // Hz offset for binaural beats
-    this._baseFreq = 200;     // Hz — low base for comfort
+    this._noiseGain = 0.25;
+    this._toneGain = 0.06;
+    this._modulationDepth = 0.3;  // how deeply the code shapes the noise
+    this._baseFreq = 200;
   }
 
-  // Configure audio for perceptual mode
   activate() {
-    this.engine.setNoiseType(1); // pink noise — most natural
+    this.engine.setNoiseType(1); // pink noise
     this.engine.setNoiseGain(this._noiseGain);
-    this.engine.setDSSSGain(this._dsssGain);
+    this.engine.setModulationDepth(this._modulationDepth);
+    this.engine.setDirectDsssGain(0.0); // no additive chirp — code lives inside the noise
     this.engine.setMasterGain(0.6);
 
-    // Low tone for grounding
     this._toneId = this.engine.addOscillator('sine', this._baseFreq, this._toneGain);
   }
 
@@ -246,8 +247,10 @@ export class PerceptualAudioTuner {
       this.engine.removeOscillator(this._toneId);
       this._toneId = undefined;
     }
-    this.engine.setNoiseGain(0.3);
-    this.engine.setDSSSGain(0.2);
+    // Clear the DSSS data so the worklet stops producing signal
+    this.engine.clearDSSS();
+    this.engine.setModulationDepth(0);
+    this.engine.setDirectDsssGain(0);
   }
 
   setNoiseGain(v) {
@@ -262,9 +265,9 @@ export class PerceptualAudioTuner {
     }
   }
 
-  setDSSSGain(v) {
-    this._dsssGain = v;
-    this.engine.setDSSSGain(v);
+  setModulationDepth(v) {
+    this._modulationDepth = v;
+    this.engine.setModulationDepth(v);
   }
 
   setBaseFreq(f) {
