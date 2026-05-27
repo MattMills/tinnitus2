@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TINNITUS — Spread-Spectrum Signal Toolkit</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <div id="app">
+    <header>
+      <h1>TINNITUS</h1>
+      <div>
+        <button id="btn-start" class="primary">Start</button>
+      </div>
+      <div id="status-text" class="status">Ready</div>
+    </header>
+
+    <main>
+      <!-- Left panel: Audio Sources -->
+      <div class="panel" id="panel-sources">
+        <h2>Audio Sources</h2>
+
+        <h3>Noise Generator</h3>
+        <div class="control-group">
+          <div class="control-row">
+            <label>Type</label>
+            <select id="noise-type">
+              <option value="0">White</option>
+              <option value="1">Pink</option>
+              <option value="2">Brown</option>
+            </select>
+          </div>
+          <div class="control-row">
+            <label>Gain</label>
+            <input type="range" id="noise-gain" min="0" max="1" step="0.01" value="0.3">
+            <span class="value" id="noise-gain-val">0.30</span>
+          </div>
+        </div>
+
+        <h3>Tone Oscillators</h3>
+        <div class="control-group">
+          <div class="control-row">
+            <label>Type</label>
+            <select id="osc-type">
+              <option value="sine">Sine</option>
+              <option value="square">Square</option>
+              <option value="sawtooth">Sawtooth</option>
+              <option value="triangle">Triangle</option>
+            </select>
+          </div>
+          <div class="control-row">
+            <label>Freq (Hz)</label>
+            <input type="number" id="osc-freq" value="440" min="20" max="20000">
+          </div>
+          <div class="control-row">
+            <label>Gain</label>
+            <input type="number" id="osc-gain-input" value="0.2" min="0" max="1" step="0.01">
+          </div>
+          <button id="btn-add-osc">+ Add Oscillator</button>
+        </div>
+
+        <div id="osc-list"></div>
+
+        <h3>DSSS Modulator</h3>
+        <div class="control-group">
+          <div class="control-row">
+            <label>Gain</label>
+            <input type="range" id="dsss-gain" min="0" max="1" step="0.01" value="0.2">
+            <span class="value" id="dsss-gain-val">0.20</span>
+          </div>
+          <div class="control-row">
+            <label>Chip Rate</label>
+            <input type="range" id="chip-rate" min="0" max="1" step="0.01" value="0.1">
+            <span class="value" id="chip-rate-val">1100</span>
+          </div>
+        </div>
+
+        <h3>Master</h3>
+        <div class="control-group">
+          <div class="control-row">
+            <label>Volume</label>
+            <input type="range" id="master-gain" min="0" max="1" step="0.01" value="0.7">
+            <span class="value" id="master-gain-val">0.70</span>
+          </div>
+        </div>
+
+        <h3>Log</h3>
+        <div class="log-area" id="log-area"></div>
+      </div>
+
+      <!-- Center: Visualizations -->
+      <div class="display-area">
+        <div class="display-cell">
+          <span class="label">Spectrogram</span>
+          <canvas id="cv-spectrogram"></canvas>
+        </div>
+        <div class="display-cell">
+          <span class="label">Waveform</span>
+          <canvas id="cv-waveform"></canvas>
+        </div>
+        <div class="display-cell">
+          <span class="label">Entropy Pattern</span>
+          <canvas id="cv-pattern"></canvas>
+        </div>
+        <div class="display-cell">
+          <span class="label">Correlation</span>
+          <canvas id="cv-correlation"></canvas>
+        </div>
+      </div>
+
+      <!-- Right panel: Signal Codec -->
+      <div class="panel" id="panel-codec">
+        <h2>Signal Codec</h2>
+
+        <h3>Gold Code Config</h3>
+        <div class="control-group">
+          <div class="control-row">
+            <label>Register</label>
+            <select id="register-length">
+              <option value="5" selected>5 (31 chips)</option>
+              <option value="7">7 (127 chips)</option>
+              <option value="10">10 (1023 chips)</option>
+            </select>
+          </div>
+        </div>
+
+        <h3>OTP Encryption</h3>
+        <div class="control-group">
+          <div class="control-row">
+            <label>Enabled</label>
+            <input type="checkbox" id="otp-enabled">
+          </div>
+          <div class="control-row">
+            <label>Seed</label>
+            <input type="number" id="otp-seed" value="12345">
+          </div>
+        </div>
+
+        <h3>Channels</h3>
+        <div class="control-group">
+          <div class="control-row">
+            <label>Name</label>
+            <input type="text" id="channel-name" placeholder="Channel name">
+          </div>
+          <div class="control-row">
+            <label>Code Offset</label>
+            <input type="number" id="channel-offset" value="0" min="0" max="1022">
+          </div>
+          <button id="btn-add-channel">+ Add Channel</button>
+        </div>
+
+        <div id="channel-list"></div>
+
+        <h3>Embedding</h3>
+        <div class="control-group">
+          <div class="control-row">
+            <label>Noise Power</label>
+            <input type="number" id="embed-noise" value="1.0" min="0" max="10" step="0.1">
+          </div>
+          <div class="control-row">
+            <label>Signal Power</label>
+            <input type="number" id="embed-signal" value="0.1" min="0" max="10" step="0.01">
+          </div>
+          <div class="btn-row">
+            <button id="btn-embed" class="primary">Embed</button>
+          </div>
+        </div>
+
+        <h3>Detection</h3>
+        <div class="control-group">
+          <div class="control-row">
+            <label>Threshold</label>
+            <input type="number" id="detect-threshold" value="0.3" min="0" max="1" step="0.05">
+          </div>
+          <div class="btn-row">
+            <button id="btn-detect">Detect</button>
+            <button id="btn-scan">Scan All</button>
+          </div>
+        </div>
+
+        <div class="detection-results" id="detection-results"></div>
+
+        <h3>Analysis</h3>
+        <div class="control-group">
+          <div class="btn-row">
+            <button id="btn-cross-correlate">Cross-Correlate</button>
+          </div>
+          <div class="btn-row">
+            <button id="btn-extract-code">Extract Code</button>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <footer>
+      <span>TINNITUS — Spread-Spectrum Signal Processing Toolkit</span>
+      <span id="footer-info">Web Audio API | Gold Codes | FEC | DSSS | OTP</span>
+    </footer>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
