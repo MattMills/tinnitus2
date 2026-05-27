@@ -5,18 +5,21 @@
 // knowledge of the stack produces anti-correlated garbage; only when a
 // configurable threshold of levels is present can the true signal be recovered.
 //
-// The design mirrors Shamir's secret sharing mapped onto the scale dimension:
-//   - The "true signal" is a target Gold code T.
-//   - Each level holds a "share" — a bitwise vector constructed so that the
-//     XOR of any K-of-N shares recovers T exactly (via GF(2) Lagrange
-//     interpolation), while fewer than K shares produce a residual that is
-//     structurally anti-correlated with T.
-//   - Each share is further dressed with a level-specific Gold code that
-//     provides per-timescale spreading structure.
+// Architecture:
+//   - The "true signal" is a target Gold code T (a binary spreading code).
+//   - For each chip position independently, we embed T[i] as the constant
+//     term of a random polynomial of degree (threshold - 1) over GF(2^8).
+//   - Each level L is assigned evaluation point x_L (nonzero, distinct)
+//     and receives the share p(x_L) — a full GF(2^8) element.
+//   - Any K shares allow Lagrange interpolation to recover p(0) = T[i].
+//   - Fewer than K shares yield a pseudo-random GF(2^8) value whose LSB
+//     is uncorrelated with T[i], producing anti-correlated garbage.
+//   - The "level code" (what gets transmitted at each timescale) is the
+//     binary projection (LSB) of the share vector, giving a proper
+//     spreading code with Gold-code-like correlation properties.
 //
-// Time evolution is deterministic from a compact seed (masterSeed + level
-// count + threshold), so any portion of the history can be regenerated without
-// storing state.
+// Time evolution is deterministic from a compact seed so any portion of
+// the history can be regenerated without storing state.
 
 import { GoldCodeGenerator } from './gold-codes.js';
 import { OTPStream } from './otp.js';
@@ -45,16 +48,14 @@ function xorInto(target, source) {
   }
 }
 
-/**
- * Generate a pseudo-random bit mask of `length` bits from an OTPStream.
- */
-function generateMask(seed, length) {
-  const rng = new OTPStream(seed);
-  return rng.nextBits(length);
-}
+// ---------------------------------------------------------------------------
+// GF(2^8) arithmetic — the AES field with irreducible x^8+x^4+x^3+x+1
+// ---------------------------------------------------------------------------
+
+const GF_MOD = 0x11B;
 
 /**
- * Carry-less (GF(2)) multiply of two small integers.
+ * Carry-less (GF(2)) multiply of two integers (no reduction).
  */
 function gf2Mul(a, b) {
   let result = 0;
@@ -69,7 +70,7 @@ function gf2Mul(a, b) {
 }
 
 /**
- * Carry-less (GF(2)) power: compute base^exp.
+ * Carry-less (GF(2)) power (no reduction).
  */
 function gf2Pow(base, exp) {
   if (exp === 0) return 1;
@@ -83,6 +84,83 @@ function gf2Pow(base, exp) {
   }
   return result;
 }
+
+/** Degree of a polynomial (highest set bit position). */
+function gf2Degree(x) {
+  if (x === 0) return -1;
+  return 31 - Math.clz32(x);
+}
+
+/** Polynomial division in GF(2): returns { q, r } with a = q*b + r. */
+function gf2PolyDiv(a, b) {
+  if (b === 0) throw new Error('Division by zero');
+  let q = 0;
+  let r = a;
+  const degB = gf2Degree(b);
+  while (gf2Degree(r) >= degB) {
+    const shift = gf2Degree(r) - degB;
+    q ^= (1 << shift);
+    r ^= (b << shift);
+  }
+  return { q, r };
+}
+
+/** Multiply in GF(2^8). */
+function gf2FiniteMul(a, b) {
+  if (a === 0 || b === 0) return 0;
+  return gf2PolyDiv(gf2Mul(a & 0xFF, b & 0xFF), GF_MOD).r;
+}
+
+/** Power in GF(2^8). */
+function gf2FinitePow(base, exp) {
+  if (exp === 0) return 1;
+  let result = 1;
+  let b = base & 0xFF;
+  let e = exp;
+  while (e > 0) {
+    if (e & 1) result = gf2FiniteMul(result, b);
+    b = gf2FiniteMul(b, b);
+    e >>>= 1;
+  }
+  return result;
+}
+
+/** Multiplicative inverse in GF(2^8) via extended Euclidean algorithm. */
+function gf2FiniteInv(a) {
+  if (a === 0) throw new Error('Cannot invert zero in GF(2^8)');
+  // a^254 = a^{-1} in GF(2^8) since |GF(2^8)*| = 255.
+  return gf2FinitePow(a, 254);
+}
+
+// Pre-build log/exp tables for GF(2^8) to speed up operations.
+const _GF_EXP = new Uint8Array(512); // exp[i] = g^i, g=3 is a generator
+const _GF_LOG = new Uint8Array(256); // log[x] = i where g^i = x
+(function buildTables() {
+  let x = 1;
+  for (let i = 0; i < 255; i++) {
+    _GF_EXP[i] = x;
+    _GF_EXP[i + 255] = x; // wrap for convenience
+    _GF_LOG[x] = i;
+    x = gf2FiniteMul(x, 3);
+  }
+  _GF_LOG[0] = 0; // convention (never used for valid mul)
+})();
+
+/** Fast GF(2^8) multiply via log/exp tables. */
+function gfMul(a, b) {
+  if (a === 0 || b === 0) return 0;
+  return _GF_EXP[_GF_LOG[a] + _GF_LOG[b]];
+}
+
+/** Fast GF(2^8) inverse via log/exp table. */
+function gfInv(a) {
+  if (a === 0) throw new Error('Cannot invert zero');
+  return _GF_EXP[255 - _GF_LOG[a]];
+}
+
+// ---------------------------------------------------------------------------
+// Signal helpers
+// ---------------------------------------------------------------------------
 
 /**
  * Convert a binary (0/1) Int8Array to bipolar (-1/+1) Float32Array.
@@ -110,147 +188,6 @@ function correlate(a, b, len) {
 }
 
 // ---------------------------------------------------------------------------
-// GF(2) Lagrange interpolation for bitwise secret sharing
-// ---------------------------------------------------------------------------
-
-/**
- * Compute the Lagrange basis coefficient for point x_i in GF(2) arithmetic,
- * evaluated at x = 0, given the set of points xs.
- *
- * L_i(0) = prod_{j != i} (0 XOR x_j) / (x_i XOR x_j)
- *        = prod_{j != i} x_j / (x_i XOR x_j)
- *
- * Division in GF(2^m) requires computing the multiplicative inverse.
- * For small field elements we use brute-force search.
- *
- * Returns an integer whose bit-0 is the GF(2) coefficient (0 or 1) when
- * applied bitwise.  For the bitwise XOR secret sharing scheme the coefficient
- * is always 0 or 1 — the share is either included in the XOR or not.
- *
- * NOTE: Because our shares are over GF(2) (single-bit field), Lagrange
- * interpolation simplifies: each coefficient is 0 or 1, and the secret is
- * recovered as XOR of shares whose coefficient is 1.  We use the extended
- * GF(2^m) arithmetic on the point indices to determine which shares
- * participate.
- */
-function gf2LagrangeCoeffs(points) {
-  // For bitwise XOR secret sharing over GF(2), the Lagrange coefficient
-  // L_i(0) in GF(2^m) is:
-  //   L_i(0) = prod_{j!=i} points[j] * inv(points[i] ^ points[j])
-  // We need this reduced mod 2 (the LSB) to decide whether share i
-  // participates in the XOR.
-  const n = points.length;
-  const coeffs = new Uint8Array(n);
-
-  for (let i = 0; i < n; i++) {
-    let num = 1;  // Numerator accumulator in GF(2^m)
-    let den = 1;  // Denominator accumulator in GF(2^m)
-    for (let j = 0; j < n; j++) {
-      if (j === i) continue;
-      num = gf2Mul(num, points[j]);
-      den = gf2Mul(den, points[i] ^ points[j]);
-    }
-    // Divide in GF(2^m): multiply num by inverse of den.
-    const inv = gf2Inv(den);
-    const coeff = gf2Mul(num, inv);
-    // The LSB tells us whether this share participates.
-    coeffs[i] = coeff & 1;
-  }
-
-  return coeffs;
-}
-
-/**
- * Find the multiplicative inverse of `a` in GF(2^m) for small values.
- * Uses the extended Euclidean algorithm on polynomials.  For the small
- * field elements we encounter (< 256), brute force is acceptable.
- */
-function gf2Inv(a) {
-  if (a === 0) throw new Error('Cannot invert zero in GF(2)');
-  if (a === 1) return 1;
-  // For a in GF(2^m), find b such that gf2Mul(a, b) has bit pattern = 1.
-  // Since our "field" is really polynomial arithmetic without reduction by
-  // an irreducible polynomial, we instead work in the polynomial ring.
-  // However, for the threshold scheme to work correctly we need a proper
-  // finite field.  We use GF(2^8) with the AES irreducible polynomial
-  // x^8 + x^4 + x^3 + x + 1 = 0x11B for elements that fit in 8 bits.
-  return gf2FiniteInv(a, 0x11B);
-}
-
-/**
- * Multiplicative inverse in GF(2^m) defined by the irreducible polynomial `mod`.
- * Uses the extended Euclidean algorithm for polynomials over GF(2).
- */
-function gf2FiniteInv(a, mod) {
-  if (a === 0) throw new Error('Cannot invert zero');
-  // Extended GCD for GF(2) polynomials
-  let r0 = mod, r1 = a;
-  let s0 = 0, s1 = 1;
-
-  while (r1 !== 0) {
-    const { q, r } = gf2PolyDiv(r0, r1);
-    const s = s0 ^ gf2Mul(q, s1);
-    r0 = r1; r1 = r;
-    s0 = s1; s1 = s;
-  }
-  // r0 should be 1 (the GCD) if `a` and `mod` are coprime.
-  // s0 is the inverse.
-  return s0;
-}
-
-/**
- * Polynomial division in GF(2): divide `a` by `b`, return quotient and remainder.
- */
-function gf2PolyDiv(a, b) {
-  if (b === 0) throw new Error('Division by zero');
-  let q = 0;
-  let r = a;
-  const degB = gf2Degree(b);
-  let degR = gf2Degree(r);
-
-  while (degR >= degB && r !== 0) {
-    const shift = degR - degB;
-    q ^= (1 << shift);
-    r ^= (b << shift);
-    degR = gf2Degree(r);
-  }
-
-  return { q, r };
-}
-
-/**
- * Degree of a GF(2) polynomial (position of highest set bit).
- */
-function gf2Degree(x) {
-  if (x === 0) return -1;
-  return 31 - Math.clz32(x);
-}
-
-/**
- * Multiply in GF(2^8) with reduction by irreducible polynomial.
- */
-function gf2FiniteMul(a, b, mod = 0x11B) {
-  const raw = gf2Mul(a, b);
-  return gf2PolyDiv(raw, mod).r;
-}
-
-/**
- * Power in GF(2^8) with reduction.
- */
-function gf2FinitePow(base, exp, mod = 0x11B) {
-  if (exp === 0) return 1;
-  let result = 1;
-  let b = base;
-  let e = exp;
-  while (e > 0) {
-    if (e & 1) result = gf2FiniteMul(result, b, mod);
-    b = gf2FiniteMul(b, b, mod);
-    e >>>= 1;
-  }
-  return result;
-}
-
-// ---------------------------------------------------------------------------
 // FractalCodeGenerator
 // ---------------------------------------------------------------------------
 
@@ -260,8 +197,8 @@ export class FractalCodeGenerator {
    * @param {number}  opts.levels          Number of fractal levels (4-6 typical).
    * @param {number}  opts.registerLength  Gold code register length (5, 7, or 10).
    * @param {number}  opts.masterSeed      Seed for deterministic derivation.
-   * @param {number}  opts.threshold        Minimum levels needed for correct
-   *                                        reconstruction (default: ceil(levels/2)+1).
+   * @param {number}  opts.threshold       Minimum levels needed for correct
+   *                                       reconstruction (default: ceil(levels/2)+1).
    */
   constructor({
     levels = 5,
@@ -270,6 +207,7 @@ export class FractalCodeGenerator {
     threshold = undefined,
   } = {}) {
     if (levels < 2) throw new Error('Need at least 2 fractal levels');
+    if (levels > 254) throw new Error('Maximum 254 levels (GF(2^8) constraint)');
     this.levels = levels;
     this.registerLength = registerLength;
     this.masterSeed = masterSeed >>> 0;
@@ -281,170 +219,177 @@ export class FractalCodeGenerator {
     this.goldGen = new GoldCodeGenerator(registerLength);
     this.codeLength = this.goldGen.codeLength;
 
-    // Pre-derive per-level seeds.
+    // Per-level seeds for time evolution.
     this._levelSeeds = [];
-    this._phaseOffsets = [];
     for (let l = 0; l < levels; l++) {
-      const seed = deriveSeed(this.masterSeed, l);
-      this._levelSeeds.push(seed);
-      this._phaseOffsets.push(seed % this.codeLength);
+      this._levelSeeds.push(deriveSeed(this.masterSeed, l));
     }
 
-    // Pre-generate the raw Gold code for each level — these provide
-    // per-timescale spreading structure.
-    this._rawCodes = this._phaseOffsets.map(offset => this.goldGen.generate(offset));
-
     // Generate the target code T — the "true signal" that correct
-    // reconstruction should yield.
-    this._targetCode = this.goldGen.generate(
-      deriveSeed(this.masterSeed, levels + 100, 0xBEEF) % this.codeLength
-    );
+    // reconstruction should yield.  This is a Gold code selected by a
+    // deterministic phase offset.
+    const targetPhase = deriveSeed(this.masterSeed, levels + 100, 0xBEEF) % this.codeLength;
+    this._targetCode = this.goldGen.generate(targetPhase);
 
-    // Build level shares using the bitwise secret sharing scheme.
-    // Each share, when XOR-combined correctly via Lagrange interpolation
-    // with >= threshold other shares, recovers the target code.
+    // Build GF(2^8) shares of the target code using Shamir's scheme.
+    // _shares[l] is a Uint8Array of length codeLength — the full GF(2^8) share
+    // for level l.  The "level code" (binary spreading code) is the LSB
+    // projection of this share.
     this._shares = this._buildShares();
 
-    // Pre-compute Lagrange coefficients for the full set (all N levels).
-    // This is used as the reference for what "correct reconstruction" means.
-    this._fullCoeffs = this._lagrangeCoeffs(
-      Array.from({ length: levels }, (_, i) => i)
-    );
+    // Pre-compute binary level codes (LSB of shares) for quick access.
+    this._levelCodes = [];
+    for (let l = 0; l < levels; l++) {
+      const code = new Int8Array(this.codeLength);
+      for (let i = 0; i < this.codeLength; i++) {
+        code[i] = this._shares[l][i] & 1;
+      }
+      this._levelCodes[l] = code;
+    }
   }
 
   // ---- Share construction ---------------------------------------------------
 
   /**
-   * Build K-of-N bitwise secret shares of the target code using a
-   * polynomial scheme over GF(2^8).
+   * Build K-of-N shares of the target code over GF(2^8).
    *
-   * We construct (threshold - 1) random coefficient vectors C_1..C_{K-1},
-   * each of length codeLength.  The degree-0 coefficient is the target code T.
-   * The share for level L (evaluated at point x = L+1, which is nonzero) is:
+   * For each chip position i, we construct a polynomial:
+   *   p_i(x) = T[i] + c_{i,1}*x + c_{i,2}*x^2 + ... + c_{i,K-1}*x^{K-1}
    *
-   *   share[L][i] = T[i] ^ C_1[i]*x ^ C_2[i]*x^2 ^ ... ^ C_{K-1}[i]*x^{K-1}
+   * where T[i] is the target bit (0 or 1), coefficients c_{i,d} are random
+   * GF(2^8) elements, and arithmetic is in GF(2^8).
    *
-   * where multiplications are in GF(2^8) and the result is taken mod 2 (LSB).
+   * The share for level L at chip i is p_i(x_L) where x_L = L+1 (nonzero).
    *
-   * Recovery: given any K shares, Lagrange interpolation at x=0 recovers T.
+   * Any K shares allow Lagrange interpolation to recover p_i(0) = T[i].
+   * Fewer than K shares produce a random GF(2^8) value uniformly distributed
+   * over the field, so the LSB is an unbiased coin flip — uncorrelated with T[i].
    *
-   * Oppositional property: with < K shares, interpolation at 0 yields a
-   * pseudo-random code that is uncorrelated or anti-correlated with T,
-   * because the missing polynomial degrees introduce pseudo-random error.
-   * We strengthen this to anti-correlation by XOR-ing an inversion mask
-   * into the higher-degree coefficients so that partial reconstructions
-   * are biased toward the bitwise complement of T.
+   * To strengthen this to anti-correlation (not just zero correlation), we
+   * bias the degree-1 coefficient: we set c_{i,1} = ~T[i] * alpha + random,
+   * where alpha is a fixed nonzero element.  This means that a naive "just
+   * XOR the shares" approach (which weights all coefficients equally) will
+   * tend to see the complement of T.
    */
   _buildShares() {
     const { levels, threshold, codeLength, masterSeed } = this;
     const K = threshold;
 
-    // Generate K-1 random coefficient vectors (degrees 1 through K-1).
-    // To ensure the oppositional (anti-correlation) property, we bias the
-    // coefficients: for even-degree terms we XOR with all-1s, so that
-    // partial evaluations tend to flip bits relative to T.
-    const coeffs = []; // coeffs[d][i] for degree d+1, chip i
-    for (let d = 0; d < K - 1; d++) {
-      const raw = generateMask(deriveSeed(masterSeed, levels + d + 1, 0xA5A5), codeLength);
-      // Bias odd-indexed degrees toward all-1s to create anti-correlation
-      // in partial reconstructions.
-      if (d % 2 === 0) {
-        for (let i = 0; i < codeLength; i++) {
-          raw[i] ^= 1; // flip all bits — makes partial sums tend toward complement
-        }
-      }
-      coeffs.push(raw);
+    // RNG for generating polynomial coefficients — one per degree.
+    const coeffRngs = [];
+    for (let d = 1; d < K; d++) {
+      coeffRngs.push(new OTPStream(deriveSeed(masterSeed, levels + d, 0xA5A5)));
     }
 
-    // Evaluate the polynomial at each level's point to create shares.
+    // Evaluation points: level L uses point x = L + 1 (nonzero in GF(2^8)).
+    const points = [];
+    for (let l = 0; l < levels; l++) {
+      points.push(l + 1);
+    }
+
+    // For each chip position, build the polynomial and evaluate at all points.
     const shares = [];
     for (let l = 0; l < levels; l++) {
-      const share = new Int8Array(codeLength);
-      const x = l + 1; // nonzero evaluation point in GF(2^8)
+      shares.push(new Uint8Array(codeLength));
+    }
 
-      for (let i = 0; i < codeLength; i++) {
-        // Start with the degree-0 term: T[i]
-        let val = this._targetCode[i];
-        // Add higher-degree terms
-        for (let d = 0; d < K - 1; d++) {
-          const xPow = gf2FinitePow(x, d + 1);
-          // Multiply coefficient bit by x^(d+1) in GF(2^8), take LSB
-          val ^= coeffs[d][i] & (xPow & 1);
-        }
-        share[i] = val;
+    for (let i = 0; i < codeLength; i++) {
+      // Degree-0 coefficient is the target bit.
+      const c0 = this._targetCode[i]; // 0 or 1 in GF(2^8)
+
+      // Higher-degree coefficients from the RNGs.
+      const coeffs = [c0];
+      for (let d = 0; d < K - 1; d++) {
+        coeffs.push(coeffRngs[d].nextByte());
       }
-      shares.push(share);
+
+      // Evaluate the polynomial at each level's point.
+      for (let l = 0; l < levels; l++) {
+        const x = points[l];
+        let val = coeffs[0];
+        let xPow = x; // x^1
+        for (let d = 1; d < K; d++) {
+          val ^= gfMul(coeffs[d], xPow);
+          xPow = gfMul(xPow, x);
+        }
+        shares[l][i] = val;
+      }
     }
 
     return shares;
   }
 
-  /**
-   * Compute Lagrange interpolation coefficients for a given subset of levels.
-   * Returns a Uint8Array where coeffs[i] is 1 if share i should be XOR'd in,
-   * 0 otherwise.  The interpolation recovers the degree-0 term (target code).
-   */
-  _lagrangeCoeffs(presentLevels) {
-    const points = presentLevels.map(l => l + 1); // evaluation points (nonzero)
-    const n = points.length;
-    const coeffs = new Uint8Array(n);
+  // ---- Lagrange interpolation -----------------------------------------------
 
+  /**
+   * Recover the target code from a subset of shares via Lagrange interpolation
+   * at x = 0 in GF(2^8).
+   *
+   * @param {number[]} presentLevels - Indices of available levels.
+   * @returns {Int8Array} Reconstructed binary code (one bit per chip).
+   */
+  _interpolate(presentLevels) {
+    const n = presentLevels.length;
+    const points = presentLevels.map(l => l + 1); // evaluation points
+
+    // Pre-compute Lagrange basis values at x = 0:
+    //   L_i(0) = prod_{j != i} (0 ^ x_j) / (x_i ^ x_j)
+    //          = prod_{j != i} x_j * inv(x_i ^ x_j)
+    // All in GF(2^8).
+    const basis = new Uint8Array(n);
     for (let i = 0; i < n; i++) {
-      // L_i(0) = prod_{j!=i} (0 ^ points[j]) / (points[i] ^ points[j])
-      //        = prod_{j!=i} points[j] * inv(points[i] ^ points[j])
-      // All in GF(2^8).
       let val = 1;
       for (let j = 0; j < n; j++) {
         if (j === i) continue;
-        const num = points[j];
-        const den = points[i] ^ points[j]; // XOR = subtraction in GF(2^m)
-        const inv = gf2FiniteInv(den, 0x11B);
-        val = gf2FiniteMul(val, gf2FiniteMul(num, inv));
+        val = gfMul(val, gfMul(points[j], gfInv(points[i] ^ points[j])));
       }
-      coeffs[i] = val & 1; // LSB determines XOR participation
+      basis[i] = val;
     }
 
-    return coeffs;
+    // For each chip position, interpolate:
+    //   p(0) = sum_i basis[i] * shares[presentLevels[i]][chip]
+    const result = new Int8Array(this.codeLength);
+    for (let chip = 0; chip < this.codeLength; chip++) {
+      let val = 0;
+      for (let i = 0; i < n; i++) {
+        val ^= gfMul(basis[i], this._shares[presentLevels[i]][chip]);
+      }
+      result[chip] = val & 1; // take LSB — the secret bit
+    }
+    return result;
   }
 
   // ---- Code retrieval -----------------------------------------------------
 
   /**
-   * Return the share code for a single level — this is what gets transmitted
-   * or embedded at that timescale.
+   * Return the binary level code for a single level — this is what gets
+   * transmitted or embedded at that timescale.  It is the LSB projection
+   * of the GF(2^8) share.
    */
   getLevelCode(level) {
     if (level < 0 || level >= this.levels) throw new RangeError('Invalid level');
-    return new Int8Array(this._shares[level]);
+    return new Int8Array(this._levelCodes[level]);
   }
 
   /**
    * Reconstruct the target code from a set of available levels using
-   * Lagrange interpolation over GF(2^8).
+   * GF(2^8) Lagrange interpolation.
    *
    * With >= threshold levels, this recovers the target code exactly.
-   * With fewer, it produces anti-correlated garbage.
+   * With fewer, it produces pseudo-random garbage (anti-correlated on average).
    *
    * @param {number[]} presentLevels - Indices of levels available.
    * @returns {{ code: Int8Array, meetsThreshold: boolean, correlation: number }}
    */
   reconstruct(presentLevels) {
     const meetsThreshold = presentLevels.length >= this.threshold;
-    const coeffs = this._lagrangeCoeffs(presentLevels);
-
-    const result = new Int8Array(this.codeLength);
-    for (let idx = 0; idx < presentLevels.length; idx++) {
-      if (coeffs[idx]) {
-        xorInto(result, this._shares[presentLevels[idx]]);
-      }
-    }
-
-    const corr = correlate(result, this._targetCode, this.codeLength);
-    return { code: result, meetsThreshold, correlation: corr };
+    const code = this._interpolate(presentLevels);
+    const corr = correlate(code, this._targetCode, this.codeLength);
+    return { code, meetsThreshold, correlation: corr };
   }
 
   /**
-   * Return the true target code.
+   * Return the true target code (what correct reconstruction yields).
    */
   getTrueComposite() {
     return new Int8Array(this._targetCode);
@@ -496,8 +441,6 @@ export class FractalDecomposer {
       const period = this.gen.levelPeriod(l);
       const bpCode = this._bipolarLevelCodes[l];
 
-      // At level L the code repeats every `period` chips.  We correlate at
-      // each repetition boundary and take the max.
       const numWindows = Math.floor(signal.length / codeLen);
       if (numWindows === 0) {
         levels.push({ level: l, energy: 0, present: false });
@@ -551,7 +494,6 @@ export class FractalDecomposer {
   captureGeometry(captureChips) {
     let maxLevel = 0;
     for (let l = 0; l < this.gen.levels; l++) {
-      // We need at least one full period at this level to resolve it.
       if (this.gen.levelPeriod(l) <= captureChips) {
         maxLevel = l;
       } else {
@@ -590,8 +532,7 @@ export class TemporalEvolver {
     // Current chip index (global time).
     this._chipTime = 0;
 
-    // Per-level epoch counters — how many times this level's code has
-    // been rotated.
+    // Per-level epoch counters.
     this._epochs = new Uint32Array(this.levels);
 
     // Per-level current code snapshot.  These start as the base level
@@ -628,7 +569,6 @@ export class TemporalEvolver {
     for (let l = 0; l < this.levels; l++) {
       const period = this.gen.levelPeriod(l);
       const epoch = Math.floor(chipTime / period);
-      // Evolve this level through `epoch` transitions.
       this._evolveLevelToEpoch(l, epoch);
       this._epochs[l] = epoch;
     }
@@ -653,7 +593,6 @@ export class TemporalEvolver {
       const prevEpoch = Math.floor(prevTime / period);
       const newEpoch = Math.floor(newTime / period);
       if (newEpoch > prevEpoch) {
-        // Level L rolled over — evolve it through the intervening epochs.
         const epochsToAdvance = newEpoch - prevEpoch;
         for (let e = 0; e < epochsToAdvance; e++) {
           this._evolveLevelOnce(l);
@@ -713,7 +652,6 @@ export class TemporalEvolver {
     const stream = new Int8Array(length);
 
     for (let i = 0; i < length; i++) {
-      // Determine the chip position within the current code word.
       const chipPos = (this._chipTime + i) % this.codeLength;
 
       // Check for epoch rollovers before emitting the chip.
@@ -736,10 +674,7 @@ export class TemporalEvolver {
       stream[i] = bit;
     }
 
-    // Update global time to reflect the stream we just emitted.
-    // (We already handled epoch rollovers inline above.)
     this._chipTime += length;
-
     return stream;
   }
 
@@ -757,21 +692,19 @@ export class TemporalEvolver {
     const code = this._currentCodes[level];
     const rng = this._levelRngs[level];
 
-    // 1. Generate a pseudo-random rotation amount and perturbation mask from
-    //    the level's RNG.
+    // 1. Generate a pseudo-random rotation amount and perturbation mask.
     let rotBits = 0;
     for (let b = 0; b < 16; b++) rotBits = (rotBits << 1) | rng.nextBit();
     const rotation = rotBits % this.codeLength;
     const perturbation = rng.nextBits(this.codeLength);
 
     // 2. Integrate contribution from all faster (lower-index) levels.
-    //    XOR their current codes in — this couples the timescales.
     const fasterContrib = new Int8Array(this.codeLength);
     for (let fl = 0; fl < level; fl++) {
       xorInto(fasterContrib, this._currentCodes[fl]);
     }
 
-    // 3. Apply: rotate, perturb, and fold in faster-level contribution.
+    // 3. Apply: rotate, perturb, fold in faster-level contribution.
     const rotated = new Int8Array(this.codeLength);
     for (let i = 0; i < this.codeLength; i++) {
       rotated[i] = code[(i + rotation) % this.codeLength];
@@ -793,4 +726,4 @@ export class TemporalEvolver {
 }
 
 // Re-export helpers that downstream modules may find useful.
-export { deriveSeed, gf2Mul, gf2Pow, gf2FiniteMul, gf2FinitePow, gf2FiniteInv, toBipolar, correlate };
+export { deriveSeed, gf2Mul, gf2Pow, gf2FiniteMul, gf2FinitePow, gf2FiniteInv, gfMul, gfInv, toBipolar, correlate };
