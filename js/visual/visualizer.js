@@ -22,14 +22,14 @@ export class Visualizer {
 
     // Layer definitions — each can be toggled, scaled, opacity-adjusted
     this.layers = {
-      grid:        { enabled: true,  opacity: 0.6, scale: 1.0, gridSize: 16 },
-      rings:       { enabled: true,  opacity: 0.5, scale: 1.0, ringCount: 5 },
-      codeCircle:  { enabled: true,  opacity: 0.5, scale: 1.0 },
-      waveformRing:{ enabled: true,  opacity: 0.5, scale: 1.0 },
-      spirals:     { enabled: true,  opacity: 0.4, scale: 1.0, armCount: 3 },
-      particles:   { enabled: false, opacity: 0.4, scale: 1.0, count: 128 },
-      bars:        { enabled: false, opacity: 0.5, scale: 1.0 },
-      lissajous:   { enabled: false, opacity: 0.5, scale: 1.0 },
+      grid:        { enabled: true,  opacity: 0.7, scale: 1.0, gridSize: 16 },
+      rings:       { enabled: true,  opacity: 0.6, scale: 1.0, ringCount: 5 },
+      codeCircle:  { enabled: true,  opacity: 0.6, scale: 1.0 },
+      waveformRing:{ enabled: true,  opacity: 0.6, scale: 1.0 },
+      spirals:     { enabled: true,  opacity: 0.5, scale: 1.0, armCount: 3 },
+      particles:   { enabled: true,  opacity: 0.5, scale: 1.0, count: 128 },
+      bars:        { enabled: true,  opacity: 0.5, scale: 1.0 },
+      lissajous:   { enabled: true,  opacity: 0.5, scale: 1.0 },
       textStream:  { enabled: true,  opacity: 0.7, scale: 1.0 },
       highDim:     { enabled: true,  opacity: 0.8, scale: 1.0 },
       colorRef:    { enabled: true,  opacity: 0.9, scale: 1.0 },
@@ -67,6 +67,8 @@ export class Visualizer {
   }
 
   setCoherence(v) { this._coherence = v; }
+
+  setEntropyInfo(info) { this._entropyInfo = info; }
 
   setLayerEnabled(name, enabled) {
     if (this.layers[name]) this.layers[name].enabled = enabled;
@@ -540,14 +542,31 @@ export class Visualizer {
 
   // --- Coherence indicator ---
   _drawCoherence(ctx, w, h) {
-    const barW = w * 0.3;
-    const x = (w - barW) / 2;
-    const y = h - 16;
-    ctx.fillStyle = 'rgba(255,255,255,0.08)';
-    ctx.fillRect(x, y, barW, 2);
+    // Coherence bar
+    const barW = w * 0.25;
+    const barX = (w - barW) / 2;
+    const barY = h - 12;
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(barX, barY, barW, 2);
     const fillW = barW * Math.min(1, this._coherence);
     ctx.fillStyle = `hsl(${120 * this._coherence}, 80%, 50%)`;
-    ctx.fillRect(x, y, fillW, 2);
+    ctx.fillRect(barX, barY, fillW, 2);
+
+    // Timestamp + entropy fingerprint at bottom
+    ctx.font = '10px monospace';
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+
+    // Left: timestamp
+    const now = new Date();
+    const ts = now.toISOString().replace('T', ' ').slice(0, 23);
+    ctx.textAlign = 'left';
+    ctx.fillText(ts, 6, h - 3);
+
+    // Right: entropy fingerprint
+    if (this._entropyInfo) {
+      ctx.textAlign = 'right';
+      ctx.fillText(this._entropyInfo, w - 6, h - 3);
+    }
   }
 
   _hue(gx, gy, chip, coarse) {
