@@ -65,6 +65,8 @@ class PerceptualMode {
     this._lastSeed = 0;
     this._userSeedText = '';
     this._controlsBound = false;
+    this._activeCode = null;  // current spreading code for correlation
+    this._activeData = null;  // current data stream
   }
 
   async start(mode) {
@@ -197,6 +199,8 @@ class PerceptualMode {
       this.immersive.setCodeState(codeArr, bitsArr);
     }
 
+    this._activeCode = codeArr;
+    this._activeData = bitsArr;
     this._lastSeed = seed;
   }
 
@@ -392,18 +396,48 @@ class PerceptualMode {
     const timeDomain = audio.getTimeDomainData();
     const frequency = audio.getFrequencyData();
 
-    // Compute coherence and accrete it as entropy
-    if (timeDomain) {
-      let energy = 0;
-      for (let i = 0; i < timeDomain.length; i++) {
-        energy += timeDomain[i] * timeDomain[i];
+    // Compute real cross-modal coherence: despread the audio against the
+    // active Gold code.  The correlation peak magnitude measures whether
+    // the same code structure is present in the audio as in the visual.
+    if (timeDomain && this._activeCode && this._activeCode.length > 0) {
+      const code = this._activeCode;
+      const codeLen = code.length;
+      const samples = timeDomain;
+
+      // Correlate audio against spreading code at multiple offsets
+      // to find the peak (we don't know exact chip alignment)
+      const chipsInBuffer = Math.floor(samples.length / (audio.ctx.sampleRate / (40 * codeLen)));
+      const samplesPerChip = Math.max(1, Math.floor(samples.length / Math.max(1, chipsInBuffer * codeLen)));
+
+      let peakCorr = 0;
+      let noiseFloor = 0;
+      const numLags = Math.min(codeLen, 16); // test a few lag offsets
+
+      for (let lag = 0; lag < numLags; lag++) {
+        let sum = 0;
+        let count = 0;
+        for (let i = 0; i < codeLen && (i + lag) * samplesPerChip < samples.length; i++) {
+          const sampleIdx = (i + lag) * samplesPerChip;
+          const chipBipolar = code[i] * 2 - 1; // map 0,1 → -1,+1
+          sum += samples[sampleIdx] * chipBipolar;
+          count++;
+        }
+        if (count > 0) {
+          const corrMag = Math.abs(sum / count);
+          if (corrMag > peakCorr) peakCorr = corrMag;
+          noiseFloor += corrMag;
+        }
       }
-      energy = Math.sqrt(energy / timeDomain.length);
-      const rawCoherence = Math.min(1, energy * 5);
-      this._coherenceSmooth = this._coherenceSmooth * 0.95 + rawCoherence * 0.05;
+      noiseFloor = numLags > 1 ? (noiseFloor - peakCorr) / (numLags - 1) : 0;
+
+      // Coherence = peak-to-average ratio, normalized to [0,1]
+      // High ratio means the code IS present in the audio
+      const ratio = noiseFloor > 0 ? peakCorr / noiseFloor : (peakCorr > 0 ? 2 : 0);
+      const rawCoherence = Math.min(1, Math.max(0, (ratio - 1) / 3));
+
+      this._coherenceSmooth = this._coherenceSmooth * 0.92 + rawCoherence * 0.08;
       this.crystal.accreteCoherence(this._coherenceSmooth);
 
-      // Update coherence bar
       const fill = document.getElementById('coherence-fill');
       const label = document.getElementById('coherence-label');
       if (fill && label) {
