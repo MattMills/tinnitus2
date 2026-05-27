@@ -355,6 +355,9 @@ class PerceptualMode {
     this._bindPerceptualSlider('p-noise-gain', (v) => this.tuner.setNoiseGain(v));
     this._bindPerceptualSlider('p-tone-gain', (v) => this.tuner.setToneGain(v));
     this._bindPerceptualSlider('p-dsss-gain', (v) => this.tuner.setModulationDepth(v));
+    this._bindPerceptualSlider('p-clock-gain', (v) => {
+      if (audio) audio.setClockGain(v);
+    });
     this._bindPerceptualSlider('p-base-freq', (v) => {
       this.tuner.setBaseFreq(v);
       document.getElementById('p-base-freq-val').textContent = Math.round(v);
