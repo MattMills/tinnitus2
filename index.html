@@ -90,7 +90,7 @@
           <button id="btn-crystal-reset" class="danger" style="font-size:10px">Reset</button>
         </div>
 
-        <h3>Audio</h3>
+        <h3>Audio Base</h3>
         <div class="control-row">
           <label>Noise</label>
           <input type="range" id="p-noise-gain" min="0" max="0.8" step="0.01" value="0.25">
@@ -110,6 +110,38 @@
           <label>Base Hz</label>
           <input type="range" id="p-base-freq" min="60" max="500" step="1" value="200">
           <span class="value" id="p-base-freq-val">200</span>
+        </div>
+
+        <h3>Audio Layers</h3>
+        <div id="audio-layer-controls">
+          <div class="layer-ctrl">
+            <label><input type="checkbox" data-audio-toggle="noiseStack" checked> Noise Stack</label>
+            <input type="range" data-audio-gain="noiseStack" min="0" max="0.4" step="0.01" value="0.15">
+          </div>
+          <div class="layer-ctrl">
+            <label><input type="checkbox" data-audio-toggle="hoppingTones" checked> Freq Hop</label>
+            <input type="range" data-audio-gain="hoppingTones" min="0" max="0.2" step="0.01" value="0.06">
+          </div>
+          <div class="layer-ctrl">
+            <label><input type="checkbox" data-audio-toggle="harmonicComb" checked> Harmonics</label>
+            <input type="range" data-audio-gain="harmonicComb" min="0" max="0.2" step="0.01" value="0.05">
+          </div>
+          <div class="layer-ctrl">
+            <label><input type="checkbox" data-audio-toggle="binaural" checked> Binaural</label>
+            <input type="range" data-audio-gain="binaural" min="0" max="0.3" step="0.01" value="0.10">
+          </div>
+          <div class="layer-ctrl">
+            <label><input type="checkbox" data-audio-toggle="spectralBands"> Spectral</label>
+            <input type="range" data-audio-gain="spectralBands" min="0" max="0.2" step="0.01" value="0.08">
+          </div>
+          <div class="layer-ctrl">
+            <label><input type="checkbox" data-audio-toggle="morseBeacon" checked> Morse</label>
+            <input type="range" data-audio-gain="morseBeacon" min="0" max="0.15" step="0.01" value="0.04">
+          </div>
+          <div class="layer-ctrl">
+            <label><input type="checkbox" data-audio-toggle="trainingRamp"> Training</label>
+            <input type="range" data-audio-gain="trainingRamp" min="0" max="0.3" step="0.01" value="0.10">
+          </div>
         </div>
 
         <h3>Visual</h3>
