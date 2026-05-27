@@ -27,6 +27,12 @@ export class TemporalRenderer {
     // Time offset between adjacent stripes (seconds)
     this.timeSpread = 0.5;
 
+    // Polarity: +1 = normal (past left, future right), -1 = inverted
+    // Flips each time the cycle hits maximum depth (7 stripes)
+    this._polarity = 1;
+    this._lastPrimeIdx = 0;
+    this._hitMax = false;
+
     // Each stripe gets its own offscreen canvas that animates independently
     this._stripeCanvases = [];
     this._stripeCtxs = [];
@@ -123,9 +129,20 @@ export class TemporalRenderer {
     // Determine current stripe count
     const cyclePos = (this._time / PRIME_CYCLE_PERIOD) % 1;
     const cycleIdx = cyclePos * PRIMES.length;
-    const primeIdx = Math.floor(cycleIdx);
-    const numStripes = PRIMES[primeIdx % PRIMES.length];
-    const timeOffsets = this._computeTimeOffsets(numStripes);
+    const primeIdx = Math.floor(cycleIdx) % PRIMES.length;
+    const numStripes = PRIMES[primeIdx];
+
+    // Detect when we hit maximum depth (7) and flip polarity
+    if (numStripes === 7 && !this._hitMax) {
+      this._polarity *= -1;
+      this._hitMax = true;
+    } else if (numStripes !== 7) {
+      this._hitMax = false;
+    }
+
+    // Compute offsets then apply polarity
+    const rawOffsets = this._computeTimeOffsets(numStripes);
+    const timeOffsets = rawOffsets.map(o => o * this._polarity);
 
     // Clear main canvas
     ctx.fillStyle = '#000';
@@ -415,5 +432,13 @@ export class TemporalRenderer {
       ctx.fillStyle = color;
       ctx.fillText(label, cx, 17);
     }
+
+    // Polarity indicator
+    const polLabel = this._polarity > 0 ? '▶ normal' : '◀ inverted';
+    const polColor = this._polarity > 0 ? 'rgba(0,255,136,0.4)' : 'rgba(255,100,100,0.5)';
+    ctx.fillStyle = polColor;
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(polLabel, w - 8, 17);
   }
 }
