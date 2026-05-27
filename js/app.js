@@ -6,6 +6,7 @@ import { Visualizer } from './visual/visualizer.js';
 import { HighDimRenderer } from './visual/highdim.js';
 import { SimpleRenderer } from './visual/simple.js';
 import { ImmersiveRenderer } from './visual/immersive.js';
+import { TemporalRenderer } from './visual/temporal.js';
 import { SignalPipeline } from './engine/pipeline.js';
 import { GoldCodeGenerator } from './signal/gold-codes.js';
 import { SeedCrystal } from './engine/seed-crystal.js';
@@ -56,7 +57,8 @@ class PerceptualMode {
     this.highDim = null;
     this.immersive = null;
     this.simpleRenderer = null;
-    this.mode = 'layered'; // 'simple', 'layered', 'immersive'
+    this.temporal = null;
+    this.mode = 'layered'; // 'simple', 'layered', 'immersive', 'temporal'
     this.running = false;
     this._rafId = null;
     this._lastTime = 0;
@@ -99,24 +101,30 @@ class PerceptualMode {
       this.simpleRenderer = null;
       this.immersive = null;
     } else if (this.mode === 'immersive') {
-      // Immersive = layered visualizer but the background grid is replaced
-      // with the 3D morphing geometry, and we're inside it looking out
       this.renderer = new Visualizer(canvas);
       this.immersive = new ImmersiveRenderer(canvas);
       this.immersive.resize();
       this.publicStream.start();
-      // Disable the flat grid — the immersive 3D field replaces it
       this.renderer.layers.grid.enabled = false;
       this.renderer.layers.highDim.enabled = false;
       this.highDim = null;
       this.simpleRenderer = null;
+      this.temporal = null;
+    } else if (this.mode === 'temporal') {
+      // Temporal = layered view split into prime-number time-entangled stripes
+      this.temporal = new TemporalRenderer(canvas);
+      this.renderer = this.temporal; // temporal wraps a Visualizer internally
+      this.highDim = null;
+      this.simpleRenderer = null;
+      this.immersive = null;
     } else {
-      // layered mode — the full multi-layer visualizer + high-dim background
+      // layered mode
       this.renderer = new Visualizer(canvas);
       this.highDim = new HighDimRenderer(canvas);
       this.publicStream.start();
       this.simpleRenderer = null;
       this.immersive = null;
+      this.temporal = null;
     }
     this.tuner = new PerceptualAudioTuner(audio);
 
@@ -160,7 +168,8 @@ class PerceptualMode {
   }
 
   _resizeAll() {
-    if (this.renderer) this.renderer.resize();
+    if (this.temporal) this.temporal.resize();
+    else if (this.renderer) this.renderer.resize();
     if (this.highDim) this.highDim.resize();
     if (this.simpleRenderer) this.simpleRenderer.resize();
     if (this.immersive) this.immersive.resize();
@@ -871,6 +880,11 @@ document.getElementById('btn-launch-layered').addEventListener('click', () => {
 document.getElementById('btn-launch-immersive').addEventListener('click', () => {
   showScreen('perceptual');
   perceptualMode.start('immersive');
+});
+
+document.getElementById('btn-launch-temporal').addEventListener('click', () => {
+  showScreen('perceptual');
+  perceptualMode.start('temporal');
 });
 
 document.getElementById('btn-launch-engineering').addEventListener('click', () => {

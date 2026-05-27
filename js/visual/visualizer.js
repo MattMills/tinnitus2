@@ -32,7 +32,14 @@ export class Visualizer {
       lissajous:   { enabled: false, opacity: 0.5, scale: 1.0 },
       textStream:  { enabled: true,  opacity: 0.7, scale: 1.0 },
       highDim:     { enabled: true,  opacity: 0.8, scale: 1.0 },
+      colorRef:    { enabled: true,  opacity: 0.9, scale: 1.0 },
     };
+
+    // Color reference state — triangular relationship rotating through full gamut
+    this._colorTriAngle = 0;   // base hue of the triangle
+    this._colorTriSat = 70;
+    this._colorTriLight = 40;
+    this._colorTriPhase = 0;   // drives saturation/lightness oscillation into brown range
 
     // Text stream content — the topmost layer, announcing what this is
     this._textLines = [];
@@ -84,6 +91,16 @@ export class Visualizer {
     this._breathPhase += dt * this.breathRate * Math.PI * 2;
     this._colorPhase += dt * 0.08;
 
+    // Evolve color reference triangle — slow rotation through full hue + brown range
+    this._colorTriAngle += dt * 12; // 30 seconds per full hue rotation
+    this._colorTriPhase += dt * 0.4;
+    // Oscillate saturation and lightness to reach browns (low sat, low-mid light)
+    // and pure spectral colors (high sat) and pastels (high light)
+    this._colorTriSat = 45 + Math.sin(this._colorTriPhase * 0.7) * 35 +
+                         Math.sin(this._colorTriPhase * 1.3) * 15;
+    this._colorTriLight = 30 + Math.sin(this._colorTriPhase * 0.5) * 20 +
+                           Math.sin(this._colorTriPhase * 1.7) * 10;
+
     const ctx = this.ctx;
     const w = this._w;
     const h = this._h;
@@ -120,6 +137,8 @@ export class Visualizer {
       this._drawCodeCircle(ctx, w, h, code, data, chipPhase, breath);
     if (this.layers.waveformRing.enabled)
       this._drawWaveformRing(ctx, w, h, audioTimeDomain);
+    if (this.layers.colorRef.enabled)
+      this._drawColorRef(ctx, w, h, code, chipPhase, breath);
     if (this.layers.textStream.enabled)
       this._drawTextStream(ctx, w, h, code, chipPhase);
 
@@ -140,15 +159,39 @@ export class Visualizer {
     const cellH = gridH / gs;
     const offset = Math.floor(chipPhase) % code.length;
 
+    // Color triangle vertices — 3 hues always 120° apart
+    const triH0 = this._colorTriAngle % 360;
+    const triH1 = (triH0 + 120) % 360;
+    const triH2 = (triH0 + 240) % 360;
+    const triS = this._colorTriSat;
+    const triL = this._colorTriLight;
+
     ctx.globalAlpha = L.opacity;
     for (let gy = 0; gy < gs; gy++) {
       for (let gx = 0; gx < gs; gx++) {
         const idx = (gy * gs + gx + offset) % code.length;
         const chip = code[idx];
         const coarse = code[Math.floor((gy * gs + gx) / 4) % code.length];
-        const hue = this._hue(gx, gy, chip, coarse);
-        const light = 6 + chip * 18 + breath * 5;
-        ctx.fillStyle = `hsl(${hue}, 70%, ${light}%)`;
+
+        // Determine if this cell is a coherence reference cell
+        // Reference cells form a regular pattern: every 4th cell in a staggered grid
+        const isRef = ((gx + gy * 2) % 5 === 0);
+
+        let hue, sat, light;
+        if (isRef) {
+          // Coherent: pick one of the three triangle vertices based on position
+          const triVertex = (gx + gy) % 3;
+          hue = [triH0, triH1, triH2][triVertex];
+          sat = triS;
+          light = triL + chip * 10 + breath * 3;
+        } else {
+          // Incoherent: entropic color from the code
+          hue = this._hue(gx, gy, chip, coarse);
+          sat = 70;
+          light = 6 + chip * 18 + breath * 5;
+        }
+
+        ctx.fillStyle = `hsl(${hue}, ${sat}%, ${light}%)`;
         ctx.fillRect(ox + gx * cellW + 0.5, oy + gy * cellH + 0.5, cellW - 1, cellH - 1);
       }
     }
@@ -368,6 +411,90 @@ export class Visualizer {
     ctx.strokeStyle = `hsl(${hue}, 60%, 50%)`;
     ctx.lineWidth = 1;
     ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // --- Layer: Color Reference (coherence/incoherence standard) ---
+  // Three corner swatches maintain a triangular color relationship (always 120°
+  // apart in hue) while slowly rotating through the full gamut.  Saturation and
+  // lightness oscillate to reach every perceivable color including browns, olives,
+  // maroons — colors that require specific sat/light combinations not reachable
+  // by hue alone.
+  //
+  // The triangle provides a coherence standard: the viewer's color perception
+  // system can anchor to the known 120° relationship.  Grid cells that match the
+  // triangle are "coherent."  Grid cells with entropic colors are "incoherent."
+  // The contrast between them engages color constancy mechanisms.
+  _drawColorRef(ctx, w, h, code, chipPhase, breath) {
+    const L = this.layers.colorRef;
+    const size = Math.min(w, h) * 0.06 * L.scale;
+    const margin = size * 0.6;
+
+    const triH0 = this._colorTriAngle % 360;
+    const triH1 = (triH0 + 120) % 360;
+    const triH2 = (triH0 + 240) % 360;
+    const s = this._colorTriSat;
+    const l = this._colorTriLight;
+
+    ctx.globalAlpha = L.opacity;
+
+    // Three swatches in top-left, top-right, bottom-center
+    const positions = [
+      [margin, margin],
+      [w - margin - size, margin],
+      [(w - size) / 2, h - margin - size],
+    ];
+    const hues = [triH0, triH1, triH2];
+
+    for (let i = 0; i < 3; i++) {
+      const [px, py] = positions[i];
+      const hue = hues[i];
+
+      // Main swatch
+      ctx.fillStyle = `hsl(${hue}, ${s}%, ${l}%)`;
+      ctx.fillRect(px, py, size, size);
+
+      // Thin border showing the pure hue at full saturation for comparison
+      ctx.strokeStyle = `hsl(${hue}, 100%, 50%)`;
+      ctx.lineWidth = 1.5;
+      ctx.strokeRect(px, py, size, size);
+
+      // Small label
+      ctx.fillStyle = `hsla(0, 0%, ${l > 50 ? 0 : 100}%, 0.6)`;
+      ctx.font = '9px monospace';
+      ctx.textAlign = 'center';
+      ctx.fillText(`${Math.round(hue)}°`, px + size / 2, py + size / 2 + 3);
+    }
+
+    // Draw thin lines connecting the three swatches (the triangle)
+    ctx.beginPath();
+    ctx.moveTo(positions[0][0] + size / 2, positions[0][1] + size / 2);
+    ctx.lineTo(positions[1][0] + size / 2, positions[1][1] + size / 2);
+    ctx.lineTo(positions[2][0] + size / 2, positions[2][1] + size / 2);
+    ctx.closePath();
+    ctx.strokeStyle = `hsla(${triH0}, ${s}%, ${l + 20}%, 0.2)`;
+    ctx.lineWidth = 0.5;
+    ctx.stroke();
+
+    // Incoherence indicator: a small swatch showing the "opposite" of coherence —
+    // a color derived from the code that breaks the triangle relationship
+    const cIdx = Math.floor(chipPhase) % (code?.length || 1);
+    const chip = code ? code[cIdx] : 0;
+    const incoherentHue = (triH0 + 60 + chip * 30) % 360; // deliberately NOT on the triangle
+    const incoherentS = 90 - s;  // inverted saturation
+    const incoherentL = 80 - l;  // inverted lightness
+    const incSize = size * 0.6;
+    const incX = (w - incSize) / 2;
+    const incY = margin;
+    ctx.fillStyle = `hsl(${incoherentHue}, ${Math.abs(incoherentS)}%, ${Math.max(5, Math.abs(incoherentL))}%)`;
+    ctx.fillRect(incX, incY, incSize, incSize);
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth = 0.5;
+    ctx.strokeRect(incX, incY, incSize, incSize);
+    ctx.fillStyle = 'rgba(255,255,255,0.3)';
+    ctx.font = '7px monospace';
+    ctx.fillText('inc', incX + incSize / 2, incY + incSize / 2 + 2);
+
     ctx.globalAlpha = 1;
   }
 
