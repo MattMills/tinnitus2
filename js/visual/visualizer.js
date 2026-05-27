@@ -31,6 +31,7 @@ export class Visualizer {
       bars:        { enabled: false, opacity: 0.5, scale: 1.0 },
       lissajous:   { enabled: false, opacity: 0.5, scale: 1.0 },
       textStream:  { enabled: true,  opacity: 0.7, scale: 1.0 },
+      highDim:     { enabled: true,  opacity: 0.8, scale: 1.0 },
     };
 
     // Text stream content — the topmost layer, announcing what this is
@@ -88,10 +89,13 @@ export class Visualizer {
     const h = this._h;
     const breath = (Math.sin(this._breathPhase) + 1) / 2;
 
-    // Background
-    const bg = 2 + breath * 3;
-    ctx.fillStyle = `rgb(${bg},${bg},${bg + 2})`;
-    ctx.fillRect(0, 0, w, h);
+    // Background (skip if high-dim renderer already drew)
+    if (!this.skipBackground) {
+      const bg = 2 + breath * 3;
+      ctx.fillStyle = `rgb(${bg},${bg},${bg + 2})`;
+      ctx.fillRect(0, 0, w, h);
+    }
+    this.skipBackground = false;
 
     const code = this._codeState?.spreadingCode;
     const data = this._codeState?.dataStream;
