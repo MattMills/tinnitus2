@@ -5,6 +5,7 @@ import { Visualizer } from './visual/visualizer.js';
 import { SignalPipeline } from './engine/pipeline.js';
 import { GoldCodeGenerator } from './signal/gold-codes.js';
 import { SeedCrystal } from './engine/seed-crystal.js';
+import { SensorHarvester } from './engine/sensor-harvest.js';
 
 // ================================================================
 // Mode management
@@ -44,6 +45,7 @@ class PerceptualMode {
     this.renderer = null;
     this.tuner = null;
     this.crystal = new SeedCrystal();
+    this.harvester = new SensorHarvester();
     this.running = false;
     this._rafId = null;
     this._lastTime = 0;
@@ -79,6 +81,13 @@ class PerceptualMode {
     this._updateCrystalDisplay();
     this.tuner.activate();
 
+    // Start sensor harvester — all entropy feeds into identity
+    this.harvester.onEntropy((value, source) => {
+      this.crystal.accrete(value);
+    });
+    this.harvester.startAll();
+    this._updateSensorDisplay();
+
     this.running = true;
     this._lastTime = performance.now();
     this._renderLoop();
@@ -89,6 +98,7 @@ class PerceptualMode {
     if (this._rafId) cancelAnimationFrame(this._rafId);
     this._rafId = null;
     if (this.tuner) this.tuner.deactivate();
+    this.harvester.stopAll();
     if (audio) audio.suspend();
   }
 
@@ -152,6 +162,19 @@ class PerceptualMode {
       if (st) st.textContent = `${seedLeft}s`;
       if (ot) ot.textContent = `${otpLeft}s`;
     }
+  }
+
+  _updateSensorDisplay() {
+    const el = document.getElementById('sensor-status');
+    if (!el) return;
+    const status = this.harvester.getStatus();
+    const lines = [];
+    for (const [name, s] of Object.entries(status)) {
+      const icon = s.active ? '●' : '○';
+      const bits = s.bitsHarvested > 1024 ? `${(s.bitsHarvested / 1024).toFixed(1)}kb` : `${s.bits}b`;
+      lines.push(`<span style="color:${s.active ? 'var(--accent)' : 'var(--text-dim)'}">${icon} ${s.label}: ${bits}</span>`);
+    }
+    el.innerHTML = lines.join('<br>');
   }
 
   _bindControls() {
@@ -252,6 +275,14 @@ class PerceptualMode {
         this.renderer.setLayerScale(el.dataset.layerScale, parseFloat(el.value));
       });
     });
+
+    // Sensor source toggles
+    document.querySelectorAll('[data-sensor-toggle]').forEach(el => {
+      el.addEventListener('change', () => {
+        this.harvester.setSourceEnabled(el.dataset.sensorToggle, el.checked);
+        this._updateSensorDisplay();
+      });
+    });
   }
 
   _bindPerceptualSlider(id, callback) {
@@ -282,9 +313,10 @@ class PerceptualMode {
       this._applyIdentity();
       this._updateCrystalDisplay();
     }
-    // Update rotation timers every ~second
+    // Update rotation timers and sensor status every ~second
     if (Math.floor(now / 1000) !== Math.floor((now - dt * 1000) / 1000)) {
       this._updateCrystalDisplay();
+      this._updateSensorDisplay();
     }
 
     const timeDomain = audio.getTimeDomainData();
