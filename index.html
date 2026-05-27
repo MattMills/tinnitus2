@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="theme-color" content="#0a0a0f">
+  <title>TINNITUS</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  <!-- ============================================================ -->
+  <!-- MODE SELECTOR (shown on launch)                              -->
+  <!-- ============================================================ -->
+  <div id="launch-screen">
+    <div class="launch-content">
+      <h1 class="launch-title">TINNITUS</h1>
+      <p class="launch-subtitle">Spread-Spectrum Perceptual Signal Toolkit</p>
+      <div class="launch-modes">
+        <button id="btn-launch-perceptual" class="launch-btn primary">
+          <span class="launch-icon">&#9899;</span>
+          <span class="launch-label">Perceptual Mode</span>
+          <span class="launch-desc">Immersive audio-visual coherence<br>Phone + earbuds</span>
+        </button>
+        <button id="btn-launch-engineering" class="launch-btn">
+          <span class="launch-icon">&#9881;</span>
+          <span class="launch-label">Engineering Mode</span>
+          <span class="launch-desc">Full signal workbench<br>Desktop recommended</span>
+        </button>
+      </div>
+      <p class="launch-note">Perceptual mode requires audio — use earbuds for best experience</p>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- PERCEPTUAL MODE (full-screen immersive)                      -->
+  <!-- ============================================================ -->
+  <div id="perceptual-mode" class="mode-screen" style="display:none">
+    <canvas id="cv-perceptual"></canvas>
+
+    <!-- Minimal overlay controls (tap to show/hide) -->
+    <div id="perceptual-overlay" class="perceptual-overlay">
+      <div class="perceptual-top-bar">
+        <button id="btn-perceptual-back" class="icon-btn">&larr;</button>
+        <span class="perceptual-title">TINNITUS</span>
+        <button id="btn-perceptual-settings" class="icon-btn">&#9881;</button>
+      </div>
+
+      <div id="perceptual-settings-panel" class="perceptual-settings" style="display:none">
+        <h3>Identity Seed</h3>
+        <div class="control-row">
+          <label>Seed</label>
+          <input type="number" id="p-seed" value="42" min="0">
+        </div>
+        <div class="control-row">
+          <label>Phrase</label>
+          <input type="text" id="p-phrase" placeholder="Your identity phrase...">
+        </div>
+
+        <h3>Audio</h3>
+        <div class="control-row">
+          <label>Noise</label>
+          <input type="range" id="p-noise-gain" min="0" max="0.5" step="0.01" value="0.15">
+          <span class="value" id="p-noise-gain-val">0.15</span>
+        </div>
+        <div class="control-row">
+          <label>Tone</label>
+          <input type="range" id="p-tone-gain" min="0" max="0.3" step="0.01" value="0.08">
+          <span class="value" id="p-tone-gain-val">0.08</span>
+        </div>
+        <div class="control-row">
+          <label>Signal</label>
+          <input type="range" id="p-dsss-gain" min="0" max="0.5" step="0.01" value="0.12">
+          <span class="value" id="p-dsss-gain-val">0.12</span>
+        </div>
+        <div class="control-row">
+          <label>Base Hz</label>
+          <input type="range" id="p-base-freq" min="60" max="500" step="1" value="200">
+          <span class="value" id="p-base-freq-val">200</span>
+        </div>
+
+        <h3>Visual</h3>
+        <div class="control-row">
+          <label>Chip Rate</label>
+          <input type="range" id="p-chip-rate" min="5" max="200" step="1" value="40">
+          <span class="value" id="p-chip-rate-val">40 Hz</span>
+        </div>
+        <div class="control-row">
+          <label>Intensity</label>
+          <input type="range" id="p-intensity" min="0.1" max="1" step="0.05" value="0.8">
+          <span class="value" id="p-intensity-val">0.80</span>
+        </div>
+        <div class="control-row">
+          <label>Grid</label>
+          <input type="range" id="p-grid" min="8" max="48" step="4" value="16">
+          <span class="value" id="p-grid-val">16</span>
+        </div>
+        <div class="control-row">
+          <label>Color</label>
+          <select id="p-color-mode">
+            <option value="warm">Warm</option>
+            <option value="cool">Cool</option>
+            <option value="spectrum">Spectrum</option>
+          </select>
+        </div>
+        <div class="control-row">
+          <label>Noise Type</label>
+          <select id="p-noise-type">
+            <option value="1" selected>Pink</option>
+            <option value="0">White</option>
+            <option value="2">Brown</option>
+          </select>
+        </div>
+
+        <h3>Fractal Layers</h3>
+        <div class="control-row">
+          <label>Levels</label>
+          <input type="range" id="p-fractal-levels" min="1" max="6" step="1" value="4">
+          <span class="value" id="p-fractal-levels-val">4</span>
+        </div>
+        <div class="control-row">
+          <label>Meta Hop</label>
+          <input type="range" id="p-hop-interval" min="1000" max="30000" step="1000" value="5000">
+          <span class="value" id="p-hop-interval-val">5s</span>
+        </div>
+      </div>
+
+      <div class="perceptual-bottom-bar">
+        <div class="coherence-bar">
+          <div class="coherence-fill" id="coherence-fill"></div>
+        </div>
+        <span class="coherence-label" id="coherence-label">Coherence: --</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============================================================ -->
+  <!-- ENGINEERING MODE (full workbench)                            -->
+  <!-- ============================================================ -->
+  <div id="engineering-mode" class="mode-screen" style="display:none">
+    <div id="app">
+      <header>
+        <div style="display:flex;align-items:center;gap:12px">
+          <button id="btn-eng-back" class="icon-btn">&larr;</button>
+          <h1>TINNITUS</h1>
+        </div>
+        <div>
+          <button id="btn-start" class="primary">Start</button>
+          <button id="btn-to-perceptual">Perceptual</button>
+        </div>
+        <div id="status-text" class="status">Ready</div>
+      </header>
+
+      <main>
+        <!-- Left panel: Audio Sources -->
+        <div class="panel" id="panel-sources">
+          <h2>Audio Sources</h2>
+
+          <h3>Noise Generator</h3>
+          <div class="control-group">
+            <div class="control-row">
+              <label>Type</label>
+              <select id="noise-type">
+                <option value="0">White</option>
+                <option value="1">Pink</option>
+                <option value="2">Brown</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <label>Gain</label>
+              <input type="range" id="noise-gain" min="0" max="1" step="0.01" value="0.3">
+              <span class="value" id="noise-gain-val">0.30</span>
+            </div>
+          </div>
+
+          <h3>Tone Oscillators</h3>
+          <div class="control-group">
+            <div class="control-row">
+              <label>Type</label>
+              <select id="osc-type">
+                <option value="sine">Sine</option>
+                <option value="square">Square</option>
+                <option value="sawtooth">Sawtooth</option>
+                <option value="triangle">Triangle</option>
+              </select>
+            </div>
+            <div class="control-row">
+              <label>Freq (Hz)</label>
+              <input type="number" id="osc-freq" value="440" min="20" max="20000">
+            </div>
+            <div class="control-row">
+              <label>Gain</label>
+              <input type="number" id="osc-gain-input" value="0.2" min="0" max="1" step="0.01">
+            </div>
+            <button id="btn-add-osc">+ Add Oscillator</button>
+          </div>
+
+          <div id="osc-list"></div>
+
+          <h3>DSSS Modulator</h3>
+          <div class="control-group">
+            <div class="control-row">
+              <label>Gain</label>
+              <input type="range" id="dsss-gain" min="0" max="1" step="0.01" value="0.2">
+              <span class="value" id="dsss-gain-val">0.20</span>
+            </div>
+            <div class="control-row">
+              <label>Chip Rate</label>
+              <input type="range" id="chip-rate" min="0" max="1" step="0.01" value="0.1">
+              <span class="value" id="chip-rate-val">1100</span>
+            </div>
+          </div>
+
+          <h3>Master</h3>
+          <div class="control-group">
+            <div class="control-row">
+              <label>Volume</label>
+              <input type="range" id="master-gain" min="0" max="1" step="0.01" value="0.7">
+              <span class="value" id="master-gain-val">0.70</span>
+            </div>
+          </div>
+
+          <h3>Log</h3>
+          <div class="log-area" id="log-area"></div>
+        </div>
+
+        <!-- Center: Visualizations -->
+        <div class="display-area">
+          <div class="display-cell">
+            <span class="label">Spectrogram</span>
+            <canvas id="cv-spectrogram"></canvas>
+          </div>
+          <div class="display-cell">
+            <span class="label">Waveform</span>
+            <canvas id="cv-waveform"></canvas>
+          </div>
+          <div class="display-cell">
+            <span class="label">Entropy Pattern</span>
+            <canvas id="cv-pattern"></canvas>
+          </div>
+          <div class="display-cell">
+            <span class="label">Correlation</span>
+            <canvas id="cv-correlation"></canvas>
+          </div>
+        </div>
+
+        <!-- Right panel: Signal Codec -->
+        <div class="panel" id="panel-codec">
+          <h2>Signal Codec</h2>
+
+          <h3>Gold Code Config</h3>
+          <div class="control-group">
+            <div class="control-row">
+              <label>Register</label>
+              <select id="register-length">
+                <option value="5" selected>5 (31 chips)</option>
+                <option value="7">7 (127 chips)</option>
+                <option value="10">10 (1023 chips)</option>
+              </select>
+            </div>
+          </div>
+
+          <h3>OTP Encryption</h3>
+          <div class="control-group">
+            <div class="control-row">
+              <label>Enabled</label>
+              <input type="checkbox" id="otp-enabled">
+            </div>
+            <div class="control-row">
+              <label>Seed</label>
+              <input type="number" id="otp-seed" value="12345">
+            </div>
+          </div>
+
+          <h3>Channels</h3>
+          <div class="control-group">
+            <div class="control-row">
+              <label>Name</label>
+              <input type="text" id="channel-name" placeholder="Channel name">
+            </div>
+            <div class="control-row">
+              <label>Code Offset</label>
+              <input type="number" id="channel-offset" value="0" min="0" max="1022">
+            </div>
+            <button id="btn-add-channel">+ Add Channel</button>
+          </div>
+
+          <div id="channel-list"></div>
+
+          <h3>Embedding</h3>
+          <div class="control-group">
+            <div class="control-row">
+              <label>Noise Power</label>
+              <input type="number" id="embed-noise" value="1.0" min="0" max="10" step="0.1">
+            </div>
+            <div class="control-row">
+              <label>Signal Power</label>
+              <input type="number" id="embed-signal" value="0.1" min="0" max="10" step="0.01">
+            </div>
+            <div class="btn-row">
+              <button id="btn-embed" class="primary">Embed</button>
+            </div>
+          </div>
+
+          <h3>Detection</h3>
+          <div class="control-group">
+            <div class="control-row">
+              <label>Threshold</label>
+              <input type="number" id="detect-threshold" value="0.3" min="0" max="1" step="0.05">
+            </div>
+            <div class="btn-row">
+              <button id="btn-detect">Detect</button>
+              <button id="btn-scan">Scan All</button>
+            </div>
+          </div>
+
+          <div class="detection-results" id="detection-results"></div>
+
+          <h3>Analysis</h3>
+          <div class="control-group">
+            <div class="btn-row">
+              <button id="btn-cross-correlate">Cross-Correlate</button>
+            </div>
+            <div class="btn-row">
+              <button id="btn-extract-code">Extract Code</button>
+            </div>
+          </div>
+
+          <h3>Interferometry</h3>
+          <div class="control-group">
+            <div class="control-row">
+              <label>Sources</label>
+              <input type="number" id="interf-sources" value="4" min="3" max="8">
+            </div>
+            <div class="control-row">
+              <label>Field Size</label>
+              <input type="number" id="interf-field-size" value="10" min="1" max="100" step="1">
+            </div>
+            <div class="btn-row">
+              <button id="btn-init-field">Init Field</button>
+              <button id="btn-localize">Localize</button>
+            </div>
+          </div>
+
+          <h3>Provenance</h3>
+          <div class="control-group">
+            <div class="btn-row">
+              <button id="btn-embed-provenance">Embed Provenance</button>
+              <button id="btn-extract-provenance">Extract</button>
+            </div>
+            <div id="provenance-results" class="detection-results"></div>
+          </div>
+        </div>
+      </main>
+
+      <footer>
+        <span>TINNITUS — Spread-Spectrum Signal Processing Toolkit</span>
+        <span id="footer-info">Gold Codes | FEC | DSSS | OTP | Fractal | Interferometry</span>
+      </footer>
+    </div>
+  </div>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>
