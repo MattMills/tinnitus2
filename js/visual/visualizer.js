@@ -30,7 +30,12 @@ export class Visualizer {
       particles:   { enabled: false, opacity: 0.4, scale: 1.0, count: 128 },
       bars:        { enabled: false, opacity: 0.5, scale: 1.0 },
       lissajous:   { enabled: false, opacity: 0.5, scale: 1.0 },
+      textStream:  { enabled: true,  opacity: 0.7, scale: 1.0 },
     };
+
+    // Text stream content — the topmost layer, announcing what this is
+    this._textLines = [];
+    this._textScroll = 0;
 
     this._particles = [];
     this._colorPhase = 0;
@@ -65,6 +70,12 @@ export class Visualizer {
 
   setLayerScale(name, scale) {
     if (this.layers[name]) this.layers[name].scale = Math.max(0.1, Math.min(3, scale));
+  }
+
+  // Set the text content for the text stream overlay
+  // lines: array of strings to display, continuously scrolling
+  setTextStream(lines) {
+    this._textLines = lines;
   }
 
   render(dt, audioTimeDomain, audioFrequency) {
@@ -105,6 +116,8 @@ export class Visualizer {
       this._drawCodeCircle(ctx, w, h, code, data, chipPhase, breath);
     if (this.layers.waveformRing.enabled)
       this._drawWaveformRing(ctx, w, h, audioTimeDomain);
+    if (this.layers.textStream.enabled)
+      this._drawTextStream(ctx, w, h, code, chipPhase);
 
     // Coherence indicator
     this._drawCoherence(ctx, w, h);
@@ -351,6 +364,46 @@ export class Visualizer {
     ctx.strokeStyle = `hsl(${hue}, 60%, 50%)`;
     ctx.lineWidth = 1;
     ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  // --- Layer: Text Stream (topmost — announces what this is) ---
+  _drawTextStream(ctx, w, h, code, chipPhase) {
+    if (this._textLines.length === 0) return;
+    const L = this.layers.textStream;
+    const fontSize = Math.max(10, Math.min(14, h * 0.018)) * L.scale;
+    const lineHeight = fontSize * 1.6;
+    const totalHeight = this._textLines.length * lineHeight;
+
+    // Slow continuous scroll
+    this._textScroll += 0.3;
+    if (this._textScroll > totalHeight + h) this._textScroll = 0;
+
+    ctx.globalAlpha = L.opacity;
+    ctx.font = `${fontSize}px 'SF Mono','Fira Code','Cascadia Code',monospace`;
+    ctx.textAlign = 'center';
+
+    for (let i = 0; i < this._textLines.length; i++) {
+      const baseY = h + (i * lineHeight) - this._textScroll;
+      if (baseY < -lineHeight || baseY > h + lineHeight) continue;
+
+      const line = this._textLines[i];
+      // Each character gets a code-modulated color
+      const chars = Array.from(line);
+      const totalW = ctx.measureText(line).width;
+      let x = (w - totalW) / 2;
+
+      for (let c = 0; c < chars.length; c++) {
+        const codeIdx = (Math.floor(chipPhase) + i * 7 + c) % (code?.length || 1);
+        const chip = code ? code[codeIdx] : 0;
+        const hue = (this._colorPhase * 360 + c * 3 + chip * 60) % 360;
+        const light = 35 + chip * 25;
+        ctx.fillStyle = `hsl(${hue}, 50%, ${light}%)`;
+        ctx.textAlign = 'left';
+        ctx.fillText(chars[c], x, baseY);
+        x += ctx.measureText(chars[c]).width;
+      }
+    }
     ctx.globalAlpha = 1;
   }
 

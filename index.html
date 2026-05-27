@@ -67,6 +67,14 @@
           <label>OTP</label>
           <span class="value" id="p-otp-timer" style="width:auto">--</span>
         </div>
+        <div class="control-row">
+          <label>Your Seed</label>
+          <input type="text" id="p-user-seed" placeholder="Type text to overlay as seed...">
+        </div>
+        <div class="control-row">
+          <label>Device Info</label>
+          <input type="checkbox" id="p-embed-device" checked>
+        </div>
         <div class="btn-row" style="margin-bottom:8px">
           <button id="btn-crystal-export" style="font-size:10px">Export</button>
           <button id="btn-crystal-reset" class="danger" style="font-size:10px">Reset</button>
@@ -153,6 +161,11 @@
             <label><input type="checkbox" data-layer-toggle="lissajous"> Lissajous</label>
             <input type="range" data-layer-opacity="lissajous" min="0" max="1" step="0.05" value="0.5">
             <input type="range" data-layer-scale="lissajous" min="0.2" max="2" step="0.1" value="1.0">
+          </div>
+          <div class="layer-ctrl" data-layer="textStream">
+            <label><input type="checkbox" data-layer-toggle="textStream" checked> Text</label>
+            <input type="range" data-layer-opacity="textStream" min="0" max="1" step="0.05" value="0.7">
+            <input type="range" data-layer-scale="textStream" min="0.5" max="3" step="0.1" value="1.0">
           </div>
         </div>
       </div>

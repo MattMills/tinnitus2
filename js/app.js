@@ -51,8 +51,8 @@ class PerceptualMode {
     this._settingsVisible = false;
     this._identityChannel = null;
     this._coherenceSmooth = 0;
-    this._lastPhrase = '';
     this._lastSeed = 0;
+    this._userSeedText = '';
     this._controlsBound = false;
   }
 
@@ -94,8 +94,8 @@ class PerceptualMode {
 
   _applyIdentity() {
     const seed = this.crystal.activeSeed;
-    const phrase = this.crystal.currentPhrase;
     const otpSeed = this.crystal.activeOtpSeed;
+    const payload = this.crystal.buildDataPayload(this._userSeedText || '');
 
     // Remove old channel if exists
     if (this._identityChannel !== null) {
@@ -105,16 +105,18 @@ class PerceptualMode {
     pipeline.setOTPSeed(otpSeed);
     this._identityChannel = pipeline.createChannel('SELF', seed % pipeline.goldGen.codeLength);
 
-    const bits = pipeline.textToBits(phrase);
+    const bits = pipeline.textToBits(payload);
     const ch = pipeline.channels.get(this._identityChannel);
     if (ch) {
-      pipeline.encodeMessage(this._identityChannel, phrase);
+      pipeline.encodeMessage(this._identityChannel, payload);
       audio.sendSpreadingCode(ch.code);
       audio.sendDataStream(bits);
       this.renderer.setCodeState(Array.from(ch.code), Array.from(bits), 0);
     }
 
-    this._lastPhrase = phrase;
+    // Update the scrolling description text
+    this.renderer.setTextStream(this.crystal.buildDescriptionText());
+
     this._lastSeed = seed;
   }
 
@@ -201,6 +203,19 @@ class PerceptualMode {
         this._applyIdentity();
         this._updateCrystalDisplay();
       }
+    });
+
+    // User seed overlay — text → hash → XOR with true seed
+    document.getElementById('p-user-seed')?.addEventListener('input', (e) => {
+      this._userSeedText = e.target.value;
+      this.crystal.setUserSeed(e.target.value || null);
+      this._applyIdentity();
+    });
+
+    // Device info toggle
+    document.getElementById('p-embed-device')?.addEventListener('change', (e) => {
+      this.crystal.setEmbedDeviceInfo(e.target.checked);
+      this._applyIdentity();
     });
 
     // Audio controls

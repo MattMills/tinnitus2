@@ -113,8 +113,11 @@ export class SeedCrystal {
     const rng = () => cryptoRandom32();
     const initialPhrase = generatePhrase(rng);
 
+    // Device UUID — persistent per-browser identity
+    const deviceUUID = this._generateUUID();
+
     return {
-      version: 1,
+      version: 2,
       masterSeed,
       activeSeed: masterSeed,
       otpSeeds,
@@ -129,14 +132,25 @@ export class SeedCrystal {
       sessionCount: 1,
       createdAt: Date.now(),
       lastActivated: Date.now(),
-      phraseRotationInterval: 30000,   // ms — rotate phrase every 30s
-      seedRotationInterval: 120000,    // ms — rotate active seed every 2min
-      otpRotationInterval: 60000,      // ms — rotate OTP layer every 60s
+      phraseRotationInterval: 30000,
+      seedRotationInterval: 120000,
+      otpRotationInterval: 60000,
       lastPhraseRotation: Date.now(),
       lastSeedRotation: Date.now(),
       lastOtpRotation: Date.now(),
       activeOtpIndex: 0,
+      deviceUUID,
+      userSeed: null,              // user-provided overlay seed (text → hash)
+      embedDeviceInfo: true,       // embed device fingerprint in data stream
     };
+  }
+
+  _generateUUID() {
+    const buf = cryptoRandomBytes(16);
+    buf[6] = (buf[6] & 0x0f) | 0x40;
+    buf[8] = (buf[8] & 0x3f) | 0x80;
+    const hex = Array.from(buf, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`;
   }
 
   _save() {
@@ -149,7 +163,11 @@ export class SeedCrystal {
 
   // Get current identity parameters
   get masterSeed() { return this._state?.masterSeed || 0; }
-  get activeSeed() { return this._state?.activeSeed || 0; }
+  get activeSeed() {
+    const base = this._state?.activeSeed || 0;
+    const overlay = this._state?.userSeed || 0;
+    return overlay ? ((base ^ overlay) >>> 0) : base;
+  }
   get currentPhrase() { return this._state?.currentPhrase || 'identity'; }
   get activeOtpSeed() {
     const idx = this._state?.activeOtpIndex || 0;
@@ -160,6 +178,102 @@ export class SeedCrystal {
   get age() { return Date.now() - (this._state?.createdAt || Date.now()); }
   get accretionDepth() { return this._state?.accretionLog?.length || 0; }
   get worldpath() { return this._state?.worldpathCheckpoints || []; }
+  get deviceUUID() { return this._state?.deviceUUID || 'unknown'; }
+  get embedDeviceInfo() { return this._state?.embedDeviceInfo !== false; }
+
+  // Set user overlay seed (XORs with true active seed)
+  setUserSeed(value) {
+    if (!this._state) return;
+    if (value === null || value === '' || value === undefined) {
+      this._state.userSeed = null;
+    } else if (typeof value === 'number') {
+      this._state.userSeed = value >>> 0;
+    } else {
+      // Hash string to 32-bit seed
+      this._state.userSeed = this._hashString(value);
+    }
+    this._save();
+  }
+
+  setEmbedDeviceInfo(enabled) {
+    if (!this._state) return;
+    this._state.embedDeviceInfo = !!enabled;
+    this._save();
+  }
+
+  _hashString(str) {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      h ^= str.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h >>> 0;
+  }
+
+  // Build the full text payload for the data stream
+  // Includes phrase + device info (if enabled) + user seed text
+  buildDataPayload(userSeedText) {
+    const parts = [this.currentPhrase];
+    if (this.embedDeviceInfo) {
+      parts.push(`uuid:${this.deviceUUID}`);
+      parts.push(`session:${this.sessionCount}`);
+      parts.push(`otp:${this._state?.activeOtpIndex || 0}`);
+      parts.push(`t:${Date.now()}`);
+      // Browser-available device signals
+      if (typeof navigator !== 'undefined') {
+        parts.push(`ua:${navigator.userAgent?.slice(0, 40) || '?'}`);
+        parts.push(`lang:${navigator.language || '?'}`);
+        parts.push(`cores:${navigator.hardwareConcurrency || '?'}`);
+        parts.push(`touch:${navigator.maxTouchPoints || 0}`);
+      }
+      if (typeof screen !== 'undefined') {
+        parts.push(`scr:${screen.width}x${screen.height}`);
+      }
+    }
+    if (userSeedText) {
+      parts.push(`msg:${userSeedText}`);
+    }
+    return parts.join('|');
+  }
+
+  // Build the description text that the visualizer scrolls
+  buildDescriptionText() {
+    return [
+      'TINNITUS — Cross-Modal Entropic Identity Signal',
+      '',
+      'This signal exists fully in neither the visual nor the auditory',
+      'domain alone. The complete signal is only recoverable through',
+      'simultaneous integration of both modalities — a computation that',
+      'only the global workspace of consciousness can perform.',
+      '',
+      'Audio: pink noise amplitude-modulated by DSSS spreading code',
+      'Visual: geometric layers driven by the same Gold code family',
+      'Cross-correlation between them IS the signal',
+      '',
+      'The spreading code is unique to this identity seed.',
+      'FEC protects the embedded data across multiple algebraic bases.',
+      'OTP encryption layers rotate continuously.',
+      'The fractal code hierarchy decomposes across neural timescales.',
+      '',
+      `Device UUID: ${this.deviceUUID}`,
+      `Session: #${this.sessionCount}`,
+      `Created: ${new Date(this._state?.createdAt || 0).toISOString()}`,
+      `Accretions: ${this.accretionDepth}`,
+      `Worldpath: ${this.worldpath.length} checkpoints`,
+      `OTP Layer: ${(this._state?.activeOtpIndex || 0) + 1}/${this.otpSeeds.length}`,
+      '',
+      `Current phrase: "${this.currentPhrase}"`,
+      '',
+      'Each layer encodes the same entropy in a different geometry.',
+      'The code acts on the noise. The noise acts on the signal.',
+      'Each observation of the signal accretes entropy into the identity.',
+      'The identity strengthens with every moment of perception.',
+      '',
+      'To any observer without the spreading code,',
+      'this is noise and random patterns.',
+      'To the holder of the seed, it is self.',
+    ];
+  }
 
   // Called every frame — handles timed rotations
   tick(now) {
