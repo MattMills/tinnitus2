@@ -139,6 +139,7 @@ class PerceptualMode {
     this._applyIdentity();
     this._updateCrystalDisplay();
     this.tuner.activate();
+    audio.initClockOscillators(0.03);
 
     // Init multi-layer audio engine
     this.audioLayers = new AudioLayerEngine(audio.ctx);
@@ -494,6 +495,9 @@ class PerceptualMode {
         label.textContent = `Coherence: ${pct}%`;
       }
     }
+
+    // Update clock oscillator frequencies (continuous timestamp encoding)
+    if (audio) audio.updateClockFrequencies();
 
     // Build entropy fingerprint string for display
     const poolHash = this.harvester.getPoolEntropy().toString(16).padStart(8, '0');
