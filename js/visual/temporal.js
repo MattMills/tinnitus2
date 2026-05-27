@@ -1,281 +1,391 @@
 // Temporal Entangled Renderer
 //
-// Divides the screen into prime-number vertical stripes showing different
-// time offsets of the same visual signal.  The stripe count oscillates
-// through primes: 1 → 3 → 5 → 7 → 5 → 3 → 1 → ...
+// Multiple independent visualizer instances run simultaneously, each at a
+// different time offset.  The screen is divided into prime-number vertical
+// stripes, each showing a LIVE animated view at a different temporal position.
 //
-// Stripe layout (example for 5 stripes, left to right):
-//   [t+2, t-1, t=0, t+1, t-2]
+// All stripes animate continuously — they are not frozen snapshots.
+// Past stripes show the signal as it WAS (delayed playback).
+// Future stripes show the signal as it WILL BE (predicted by advancing the code).
+// The center stripe is NOW.
 //
-// The past/future are interleaved on alternating sides:
-//   Center:           t=0 (now)
-//   1st from center:  left=t-1, right=t+1 (natural)
-//   2nd from center:  left=t+2, right=t-2 (SWAPPED — cross-temporal)
-//   3rd from center:  left=t-3, right=t+3 (natural)
-//
-// This forces the perceptual system to integrate across a spatially
-// scrambled timeline — engaging retrodictive processing.
-//
-// A circular buffer stores past states.  Future states are computed
-// by advancing the code deterministically.  A clear header shows the
-// relative time offset of each stripe.
+// Stripe count oscillates through primes: 1 → 3 → 5 → 7 → 5 → 3 → ...
+// Even-distance positions from center are cross-temporally swapped.
 
-import { Visualizer } from './visualizer.js';
-
-const PRIMES = [1, 3, 5, 7, 5, 3]; // oscillation cycle
-const PRIME_CYCLE_PERIOD = 12; // seconds per full oscillation
+const PRIMES = [1, 3, 5, 7, 5, 3];
+const PRIME_CYCLE_PERIOD = 15; // seconds per full oscillation
 
 export class TemporalRenderer {
   constructor(canvas) {
+    this.mainCanvas = canvas;
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this._w = 0;
     this._h = 0;
     this._time = 0;
 
-    // The underlying visualizer we render through
-    this._viz = new Visualizer(canvas);
+    // Time offset between adjacent stripes (seconds)
+    this.timeSpread = 0.5;
 
-    // Offscreen canvas for rendering individual time slices
-    this._offscreen = document.createElement('canvas');
-    this._offCtx = this._offscreen.getContext('2d');
+    // Each stripe gets its own offscreen canvas that animates independently
+    this._stripeCanvases = [];
+    this._stripeCtxs = [];
+    this._maxStripes = 7;
 
-    // Circular buffer of past states
-    this._bufferSize = 60; // ~1 second at 60fps
-    this._buffer = [];
-    this._bufferIdx = 0;
+    // Per-stripe animation state (independent time, breath, color phase)
+    this._stripeStates = [];
 
-    // Frame interval between stored states (in render frames)
-    // Larger = wider temporal spread between stripes
-    this.frameSpread = 8; // each stripe offset = 8 frames apart (~133ms)
+    // Shared code state
+    this._codeState = null;
+    this._coherence = 0;
+    this._textLines = [];
+    this.colorMode = 'spectrum';
 
-    // Current stripe configuration
-    this._currentPrimeIdx = 0;
-    this._stripeCount = 1;
-    this._stripeTransition = 0; // 0-1 blend between stripe counts
+    // Layer proxy (for compatibility with app.js layer toggle bindings)
+    this.layers = {
+      grid:        { enabled: true,  opacity: 0.6, scale: 1.0, gridSize: 16 },
+      rings:       { enabled: true,  opacity: 0.5, scale: 1.0, ringCount: 5 },
+      codeCircle:  { enabled: true,  opacity: 0.5, scale: 1.0 },
+      waveformRing:{ enabled: true,  opacity: 0.5, scale: 1.0 },
+      spirals:     { enabled: false, opacity: 0.4, scale: 1.0, armCount: 3 },
+      particles:   { enabled: false, opacity: 0.4, scale: 1.0, count: 128 },
+      bars:        { enabled: false, opacity: 0.5, scale: 1.0 },
+      lissajous:   { enabled: false, opacity: 0.5, scale: 1.0 },
+      textStream:  { enabled: false, opacity: 0.7, scale: 1.0 },
+      highDim:     { enabled: false, opacity: 0.8, scale: 1.0 },
+      colorRef:    { enabled: true,  opacity: 0.9, scale: 1.0 },
+    };
 
+    this.skipBackground = false;
+
+    this._initStripeCanvases();
     this._resize();
+  }
+
+  _initStripeCanvases() {
+    for (let i = 0; i < this._maxStripes; i++) {
+      const c = document.createElement('canvas');
+      this._stripeCanvases.push(c);
+      this._stripeCtxs.push(c.getContext('2d'));
+      this._stripeStates.push({
+        time: 0,
+        breathPhase: 0,
+        colorPhase: 0,
+        colorTriAngle: 0,
+        colorTriSat: 70,
+        colorTriLight: 40,
+        colorTriPhase: 0,
+      });
+    }
   }
 
   _resize() {
     const dpr = window.devicePixelRatio || 1;
-    const rect = this.canvas.getBoundingClientRect();
-    this.canvas.width = rect.width * dpr;
-    this.canvas.height = rect.height * dpr;
+    const rect = this.mainCanvas.getBoundingClientRect();
+    this.mainCanvas.width = rect.width * dpr;
+    this.mainCanvas.height = rect.height * dpr;
     this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     this._w = rect.width;
     this._h = rect.height;
 
-    this._offscreen.width = this.canvas.width;
-    this._offscreen.height = this.canvas.height;
-    this._offCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    this._viz._w = rect.width;
-    this._viz._h = rect.height;
+    for (const c of this._stripeCanvases) {
+      c.width = rect.width * dpr;
+      c.height = rect.height * dpr;
+    }
   }
 
   resize() { this._resize(); }
 
   setCodeState(spreadingCode, dataStream, chipIndex) {
-    this._viz.setCodeState(spreadingCode, dataStream, chipIndex);
+    this._codeState = { spreadingCode, dataStream, chipIndex };
   }
 
-  setCoherence(v) { this._viz.setCoherence(v); }
+  setCoherence(v) { this._coherence = v; }
+  setTextStream(lines) { this._textLines = lines; }
 
-  setTextStream(lines) { this._viz.setTextStream(lines); }
-
-  setLayerEnabled(name, enabled) { this._viz.setLayerEnabled(name, enabled); }
-  setLayerOpacity(name, opacity) { this._viz.setLayerOpacity(name, opacity); }
-  setLayerScale(name, scale) { this._viz.setLayerScale(name, scale); }
-
-  get layers() { return this._viz.layers; }
-  set skipBackground(v) { this._viz.skipBackground = v; }
-  set colorMode(v) { this._viz.colorMode = v; }
+  setLayerEnabled(name, enabled) {
+    if (this.layers[name]) this.layers[name].enabled = enabled;
+  }
+  setLayerOpacity(name, opacity) {
+    if (this.layers[name]) this.layers[name].opacity = Math.max(0, Math.min(1, opacity));
+  }
+  setLayerScale(name, scale) {
+    if (this.layers[name]) this.layers[name].scale = Math.max(0.1, Math.min(3, scale));
+  }
 
   render(dt, audioTimeDomain, audioFrequency) {
     this._time += dt;
     const ctx = this.ctx;
     const w = this._w;
     const h = this._h;
+    const dpr = window.devicePixelRatio || 1;
 
-    // Store current state snapshot in circular buffer
-    this._pushState(audioTimeDomain, audioFrequency);
-
-    // Determine current stripe count (oscillates through primes)
+    // Determine current stripe count
     const cyclePos = (this._time / PRIME_CYCLE_PERIOD) % 1;
     const cycleIdx = cyclePos * PRIMES.length;
     const primeIdx = Math.floor(cycleIdx);
-    this._stripeTransition = cycleIdx - primeIdx;
-    this._stripeCount = PRIMES[primeIdx % PRIMES.length];
-    const nextStripeCount = PRIMES[(primeIdx + 1) % PRIMES.length];
+    const numStripes = PRIMES[primeIdx % PRIMES.length];
+    const timeOffsets = this._computeTimeOffsets(numStripes);
 
     // Clear main canvas
     ctx.fillStyle = '#000';
     ctx.fillRect(0, 0, w, h);
 
-    if (this._stripeCount === 1 && this._stripeTransition < 0.3) {
-      // Unary view — just render normally
-      this._viz.render(dt, audioTimeDomain, audioFrequency);
-      this._drawHeader(ctx, w, h, 1);
+    if (numStripes === 1) {
+      // Single stripe — render directly to main canvas, full animation
+      this._renderStripe(this.ctx, w, h, dpr, dt, 0, audioTimeDomain, audioFrequency);
+      this._drawHeader(ctx, w, h, 1, [0]);
       return;
     }
 
-    // Multi-stripe rendering
-    const numStripes = this._stripeCount;
     const stripeW = w / numStripes;
-    const timeOffsets = this._computeTimeOffsets(numStripes);
 
+    // Render each stripe independently to its own canvas, then composite
     for (let i = 0; i < numStripes; i++) {
       const offset = timeOffsets[i];
-      const stripeX = i * stripeW;
+      const stripeCtx = this._stripeCtxs[i];
+      stripeCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-      // Get the state for this time offset
-      const state = this._getStateAtOffset(offset);
+      // Each stripe animates at real dt but with its time-offset applied
+      this._renderStripe(stripeCtx, w, h, dpr, dt, offset, audioTimeDomain, audioFrequency);
 
-      // Render the visualizer with this state to the offscreen canvas
-      this._renderStateToOffscreen(state, dt);
-
-      // Copy the relevant vertical stripe from offscreen to main canvas
-      const dpr = window.devicePixelRatio || 1;
+      // Copy only the center vertical slice of the stripe canvas to the main canvas
+      // (each stripe renders full-width but we only take the center column)
+      const srcX = Math.floor((w / 2 - stripeW / 2) * dpr);
+      const srcW = Math.ceil(stripeW * dpr);
+      const dstX = Math.floor(i * stripeW);
       ctx.drawImage(
-        this._offscreen,
-        stripeX * dpr, 0, stripeW * dpr, h * dpr,
-        stripeX, 0, stripeW, h
+        this._stripeCanvases[i],
+        srcX, 0, srcW, h * dpr,
+        dstX, 0, stripeW, h
       );
-
-      // Stripe separator
-      ctx.fillStyle = 'rgba(255,255,255,0.08)';
-      ctx.fillRect(stripeX, 0, 1, h);
     }
 
-    // Draw time offset header
+    // Stripe separators
+    for (let i = 1; i < numStripes; i++) {
+      ctx.fillStyle = 'rgba(255,255,255,0.1)';
+      ctx.fillRect(Math.floor(i * stripeW), 0, 1, h);
+    }
+
+    // Header
     this._drawHeader(ctx, w, h, numStripes, timeOffsets);
   }
 
-  _pushState(audioTimeDomain, audioFrequency) {
-    const state = {
-      time: this._viz._time,
-      breathPhase: this._viz._breathPhase,
-      colorPhase: this._viz._colorPhase,
-      chipPhase: this._viz._time * 40,
-      audioTD: audioTimeDomain ? new Float32Array(audioTimeDomain) : null,
-      audioFQ: audioFrequency ? new Float32Array(audioFrequency) : null,
-      codeState: this._viz._codeState ? { ...this._viz._codeState } : null,
-    };
-
-    if (this._buffer.length < this._bufferSize) {
-      this._buffer.push(state);
-    } else {
-      this._buffer[this._bufferIdx] = state;
-    }
-    this._bufferIdx = (this._bufferIdx + 1) % this._bufferSize;
-  }
-
-  _getStateAtOffset(offset) {
-    if (offset === 0) {
-      // Current state — use live data
-      return this._buffer.length > 0
-        ? this._buffer[(this._bufferIdx - 1 + this._buffer.length) % this._buffer.length]
-        : null;
-    }
-
-    if (offset < 0) {
-      // Past state — look back in buffer
-      const framesBack = Math.abs(offset) * this.frameSpread;
-      const idx = (this._bufferIdx - 1 - framesBack + this._buffer.length * 100) % this._buffer.length;
-      return this._buffer[idx] || null;
-    }
-
-    // Future state — compute by advancing code forward
-    // We can predict code state deterministically (it's pseudorandom from seeds)
-    const framesForward = offset * this.frameSpread;
-    const baseState = this._buffer.length > 0
-      ? this._buffer[(this._bufferIdx - 1 + this._buffer.length) % this._buffer.length]
-      : null;
-    if (!baseState) return null;
-
-    // Create a predicted future state by advancing the phase
-    const dtPerFrame = 1 / 60;
-    return {
-      ...baseState,
-      time: baseState.time + framesForward * dtPerFrame,
-      breathPhase: baseState.breathPhase + framesForward * dtPerFrame * 0.15 * Math.PI * 2,
-      colorPhase: baseState.colorPhase + framesForward * dtPerFrame * 0.08,
-      chipPhase: (baseState.time + framesForward * dtPerFrame) * 40,
-      audioTD: baseState.audioTD, // can't predict audio, use current
-      audioFQ: baseState.audioFQ,
-    };
-  }
-
-  _renderStateToOffscreen(state, dt) {
-    if (!state) {
-      this._offCtx.fillStyle = '#000';
-      this._offCtx.fillRect(0, 0, this._w, this._h);
+  _renderStripe(ctx, w, h, dpr, dt, timeOffset, audioTimeDomain, audioFrequency) {
+    const code = this._codeState?.spreadingCode;
+    const data = this._codeState?.dataStream;
+    if (!code || code.length === 0) {
+      ctx.fillStyle = '#000';
+      ctx.fillRect(0, 0, w, h);
       return;
     }
 
-    // Temporarily set the visualizer's internal state to the target time
-    const saved = {
-      time: this._viz._time,
-      breathPhase: this._viz._breathPhase,
-      colorPhase: this._viz._colorPhase,
-    };
+    // Advance this stripe's independent state
+    const idx = Math.max(0, Math.min(this._maxStripes - 1,
+      Math.abs(timeOffset) + (timeOffset >= 0 ? 0 : 3)));
+    const ss = this._stripeStates[idx];
+    ss.time += dt;
+    ss.breathPhase += dt * 0.15 * Math.PI * 2;
+    ss.colorPhase += dt * 0.08;
+    ss.colorTriAngle += dt * 12;
+    ss.colorTriPhase += dt * 0.4;
+    ss.colorTriSat = 45 + Math.sin(ss.colorTriPhase * 0.7) * 35 +
+                      Math.sin(ss.colorTriPhase * 1.3) * 15;
+    ss.colorTriLight = 30 + Math.sin(ss.colorTriPhase * 0.5) * 20 +
+                        Math.sin(ss.colorTriPhase * 1.7) * 10;
 
-    this._viz._time = state.time;
-    this._viz._breathPhase = state.breathPhase;
-    this._viz._colorPhase = state.colorPhase;
+    // The effective time for this stripe (offset from center)
+    const effectiveTime = ss.time + timeOffset * this.timeSpread;
+    const chipPhase = effectiveTime * 40;
+    const breath = (Math.sin(ss.breathPhase + timeOffset * 0.5) + 1) / 2;
 
-    // Swap canvas context to offscreen
-    const savedCtx = this._viz.ctx;
-    this._viz.ctx = this._offCtx;
+    // Background
+    const bg = 2 + breath * 3;
+    ctx.fillStyle = `rgb(${bg},${bg},${bg + 2})`;
+    ctx.fillRect(0, 0, w, h);
 
-    // Render
-    this._viz.skipBackground = false;
-    this._viz.render(0.001, state.audioTD, state.audioFQ);
+    // Grid with color reference
+    if (this.layers.grid.enabled) {
+      this._drawGrid(ctx, w, h, code, data, chipPhase, breath, ss);
+    }
 
-    // Restore
-    this._viz.ctx = savedCtx;
-    this._viz._time = saved.time;
-    this._viz._breathPhase = saved.breathPhase;
-    this._viz._colorPhase = saved.colorPhase;
+    // Rings
+    if (this.layers.rings.enabled) {
+      this._drawRings(ctx, w, h, code, data, chipPhase, breath, effectiveTime);
+    }
+
+    // Code circle
+    if (this.layers.codeCircle.enabled) {
+      this._drawCodeCircle(ctx, w, h, code, data, chipPhase, breath, ss);
+    }
+
+    // Waveform ring
+    if (this.layers.waveformRing.enabled && audioTimeDomain) {
+      this._drawWaveformRing(ctx, w, h, audioTimeDomain);
+    }
   }
 
-  // Compute the time offsets for each stripe position
-  // Center = 0, then alternating with cross-temporal swap on even positions
+  _drawGrid(ctx, w, h, code, data, chipPhase, breath, ss) {
+    const L = this.layers.grid;
+    const gs = L.gridSize;
+    const s = L.scale;
+    const gridW = w * s;
+    const gridH = h * s;
+    const ox = (w - gridW) / 2;
+    const oy = (h - gridH) / 2;
+    const cellW = gridW / gs;
+    const cellH = gridH / gs;
+    const offset = Math.floor(chipPhase) % code.length;
+
+    const triH0 = ss.colorTriAngle % 360;
+    const triH1 = (triH0 + 120) % 360;
+    const triH2 = (triH0 + 240) % 360;
+
+    ctx.globalAlpha = L.opacity;
+    for (let gy = 0; gy < gs; gy++) {
+      for (let gx = 0; gx < gs; gx++) {
+        const idx = (gy * gs + gx + offset) % code.length;
+        const chip = code[idx];
+        const coarse = code[Math.floor((gy * gs + gx) / 4) % code.length];
+        const isRef = ((gx + gy * 2) % 5 === 0);
+
+        let hue, sat, light;
+        if (isRef) {
+          const triVertex = (gx + gy) % 3;
+          hue = [triH0, triH1, triH2][triVertex];
+          sat = ss.colorTriSat;
+          light = ss.colorTriLight + chip * 10 + breath * 3;
+        } else {
+          const base = ss.colorPhase * 360;
+          const spatial = ((gx ^ gy) * 37 + gx * 7 + gy * 13) % 360;
+          hue = (base + spatial * 0.5 + chip * 60 + coarse * 30) % 360;
+          sat = 70;
+          light = 6 + chip * 18 + breath * 5;
+        }
+
+        ctx.fillStyle = `hsl(${hue}, ${sat}%, ${light}%)`;
+        ctx.fillRect(ox + gx * cellW + 0.5, oy + gy * cellH + 0.5, cellW - 1, cellH - 1);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  _drawRings(ctx, w, h, code, data, chipPhase, breath, effectiveTime) {
+    const L = this.layers.rings;
+    const cx = w / 2;
+    const cy = h / 2;
+    const maxR = Math.min(w, h) * 0.45 * L.scale;
+    const n = L.ringCount;
+
+    ctx.globalAlpha = L.opacity;
+    for (let r = 0; r < n; r++) {
+      const codeIdx = Math.floor(chipPhase + r * code.length / n) % code.length;
+      const chip = code[codeIdx];
+      const dataIdx = data ? (codeIdx % data.length) : 0;
+      const dataBit = data ? data[dataIdx] : 0;
+      const dsss = chip ^ dataBit;
+      const radius = maxR * ((r + 1) / n) * (0.8 + dsss * 0.2 + breath * 0.05);
+      const rotation = effectiveTime * (0.2 + r * 0.15) * (chip ? 1 : -1);
+      const segments = code.length;
+
+      ctx.beginPath();
+      for (let s = 0; s < segments; s++) {
+        const sIdx = (s + Math.floor(chipPhase)) % code.length;
+        const sChip = code[sIdx];
+        const rMod = radius * (0.95 + sChip * 0.1);
+        const angle = (s / segments) * Math.PI * 2 + rotation;
+        const x = cx + Math.cos(angle) * rMod;
+        const y = cy + Math.sin(angle) * rMod;
+        if (s === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      const hue = (effectiveTime * 10 + r * 60) % 360;
+      ctx.strokeStyle = `hsl(${hue}, 60%, ${40 + dsss * 20}%)`;
+      ctx.lineWidth = 1 + r * 0.3;
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  _drawCodeCircle(ctx, w, h, code, data, chipPhase, breath, ss) {
+    const L = this.layers.codeCircle;
+    const cx = w / 2;
+    const cy = h / 2;
+    const maxR = Math.min(w, h) * 0.35 * L.scale;
+    const n = code.length;
+    const angleStep = (Math.PI * 2) / n;
+    const offset = Math.floor(chipPhase) % n;
+
+    ctx.globalAlpha = L.opacity;
+    ctx.beginPath();
+    for (let i = 0; i < n; i++) {
+      const idx = (i + offset) % n;
+      const chip = code[idx];
+      const dataBit = data ? data[Math.floor(i / n * data.length) % data.length] : 0;
+      const dsss = chip ^ dataBit;
+      const r = maxR * (0.3 + dsss * 0.15 + Math.sin(ss.breathPhase + i * 0.1) * 0.05);
+      const angle = i * angleStep - Math.PI / 2;
+      if (i === 0) ctx.moveTo(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r);
+      else ctx.lineTo(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r);
+    }
+    ctx.closePath();
+    const hue = (ss.colorPhase * 100) % 360;
+    ctx.strokeStyle = `hsl(${hue}, 70%, 50%)`;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
+  _drawWaveformRing(ctx, w, h, audioTimeDomain) {
+    const L = this.layers.waveformRing;
+    const cx = w / 2;
+    const cy = h / 2;
+    const baseR = Math.min(w, h) * 0.22 * L.scale;
+
+    ctx.globalAlpha = L.opacity;
+    ctx.beginPath();
+    const step = audioTimeDomain.length / 360;
+    for (let deg = 0; deg < 360; deg++) {
+      const val = audioTimeDomain[Math.floor(deg * step)] || 0;
+      const r = baseR + val * baseR * 0.4;
+      const angle = (deg * Math.PI) / 180 - Math.PI / 2;
+      if (deg === 0) ctx.moveTo(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r);
+      else ctx.lineTo(cx + Math.cos(angle) * r, cy + Math.sin(angle) * r);
+    }
+    ctx.closePath();
+    ctx.strokeStyle = 'hsla(160, 80%, 60%, 0.8)';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+  }
+
   _computeTimeOffsets(n) {
     if (n === 1) return [0];
-
     const offsets = new Array(n).fill(0);
     const center = Math.floor(n / 2);
     offsets[center] = 0;
-
     let timeStep = 1;
     for (let dist = 1; dist <= center; dist++) {
       const leftPos = center - dist;
       const rightPos = center + dist;
-
       if (dist % 2 === 1) {
-        // Odd distance: natural mapping (past left, future right)
         if (leftPos >= 0) offsets[leftPos] = -timeStep;
         if (rightPos < n) offsets[rightPos] = timeStep;
       } else {
-        // Even distance: SWAPPED (future left, past right) — the entanglement
         if (leftPos >= 0) offsets[leftPos] = timeStep;
         if (rightPos < n) offsets[rightPos] = -timeStep;
       }
       timeStep++;
     }
-
     return offsets;
   }
 
   _drawHeader(ctx, w, h, numStripes, timeOffsets) {
     if (numStripes <= 1) {
-      // Single view header
       ctx.fillStyle = 'rgba(0,255,136,0.4)';
       ctx.font = '11px monospace';
       ctx.textAlign = 'center';
-      ctx.fillText('t = 0 (now)', w / 2, 20);
+      ctx.fillText('t = 0', w / 2, 20);
       return;
     }
 
@@ -283,9 +393,8 @@ export class TemporalRenderer {
     ctx.font = '11px monospace';
     ctx.textAlign = 'center';
 
-    // Header background
-    ctx.fillStyle = 'rgba(0,0,0,0.6)';
-    ctx.fillRect(0, 0, w, 28);
+    ctx.fillStyle = 'rgba(0,0,0,0.7)';
+    ctx.fillRect(0, 0, w, 26);
 
     for (let i = 0; i < numStripes; i++) {
       const offset = timeOffsets[i];
@@ -294,33 +403,17 @@ export class TemporalRenderer {
       let label, color;
       if (offset === 0) {
         label = 'NOW';
-        color = 'rgba(0,255,136,0.8)';
+        color = 'rgba(0,255,136,0.9)';
       } else if (offset < 0) {
         label = `t${offset}`;
-        color = 'rgba(100,150,255,0.7)';
+        color = 'rgba(100,150,255,0.8)';
       } else {
         label = `t+${offset}`;
-        color = 'rgba(255,150,100,0.7)';
+        color = 'rgba(255,150,100,0.8)';
       }
 
       ctx.fillStyle = color;
-      ctx.fillText(label, cx, 18);
-
-      // Small arrow showing temporal direction
-      const arrowY = 24;
-      ctx.beginPath();
-      if (offset < 0) {
-        ctx.moveTo(cx - 6, arrowY);
-        ctx.lineTo(cx + 6, arrowY);
-        ctx.lineTo(cx + 3, arrowY - 3);
-      } else if (offset > 0) {
-        ctx.moveTo(cx - 6, arrowY);
-        ctx.lineTo(cx + 6, arrowY);
-        ctx.lineTo(cx + 3, arrowY + 3);
-      }
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
-      ctx.stroke();
+      ctx.fillText(label, cx, 17);
     }
   }
 }
