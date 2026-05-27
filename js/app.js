@@ -3,6 +3,8 @@ import { VisualRenderer } from './visual/renderer.js';
 import { PerceptualAudioTuner } from './visual/perceptual.js';
 import { Visualizer } from './visual/visualizer.js';
 import { HighDimRenderer } from './visual/highdim.js';
+import { SimpleRenderer } from './visual/simple.js';
+import { ImmersiveRenderer } from './visual/immersive.js';
 import { SignalPipeline } from './engine/pipeline.js';
 import { GoldCodeGenerator } from './signal/gold-codes.js';
 import { SeedCrystal } from './engine/seed-crystal.js';
@@ -50,6 +52,9 @@ class PerceptualMode {
     this.harvester = new SensorHarvester();
     this.publicStream = new PublicDataStream();
     this.highDim = null;
+    this.immersive = null;
+    this.simpleRenderer = null;
+    this.mode = 'layered'; // 'simple', 'layered', 'immersive'
     this.running = false;
     this._rafId = null;
     this._lastTime = 0;
@@ -62,21 +67,40 @@ class PerceptualMode {
     this._controlsBound = false;
   }
 
-  async start() {
+  async start(mode) {
+    this.mode = mode || 'layered';
     await ensureAudio();
     if (audio.ctx && audio.ctx.state === 'suspended') audio.resume();
 
-    // Load or create seed crystal
     const existed = this.crystal.load();
-
     const canvas = document.getElementById('cv-perceptual');
-    this.renderer = new Visualizer(canvas);
-    this.highDim = new HighDimRenderer(canvas);
-    this.tuner = new PerceptualAudioTuner(audio);
-    this.publicStream.start();
 
-    window.addEventListener('resize', () => this.renderer.resize());
-    this.renderer.resize();
+    // Create the appropriate renderer(s) for the mode
+    if (this.mode === 'simple') {
+      this.simpleRenderer = new SimpleRenderer(canvas);
+      this.simpleRenderer.resize();
+      this.renderer = null;
+      this.highDim = null;
+      this.immersive = null;
+    } else if (this.mode === 'immersive') {
+      this.immersive = new ImmersiveRenderer(canvas);
+      this.immersive.resize();
+      this.publicStream.start();
+      this.renderer = null;
+      this.highDim = null;
+      this.simpleRenderer = null;
+    } else {
+      // layered mode — the full multi-layer visualizer + high-dim background
+      this.renderer = new Visualizer(canvas);
+      this.highDim = new HighDimRenderer(canvas);
+      this.publicStream.start();
+      this.simpleRenderer = null;
+      this.immersive = null;
+    }
+    this.tuner = new PerceptualAudioTuner(audio);
+
+    window.addEventListener('resize', () => this._resizeAll());
+    this._resizeAll();
 
     if (!this._controlsBound) {
       this._bindControls();
@@ -109,12 +133,18 @@ class PerceptualMode {
     if (audio) audio.suspend();
   }
 
+  _resizeAll() {
+    if (this.renderer) this.renderer.resize();
+    if (this.highDim) this.highDim.resize();
+    if (this.simpleRenderer) this.simpleRenderer.resize();
+    if (this.immersive) this.immersive.resize();
+  }
+
   _applyIdentity() {
     const seed = this.crystal.activeSeed;
     const otpSeed = this.crystal.activeOtpSeed;
     const payload = this.crystal.buildDataPayload(this._userSeedText || '');
 
-    // Remove old channel if exists
     if (this._identityChannel !== null) {
       pipeline.removeChannel(this._identityChannel);
     }
@@ -124,26 +154,30 @@ class PerceptualMode {
 
     const bits = pipeline.textToBits(payload);
     const ch = pipeline.channels.get(this._identityChannel);
+    const codeArr = ch ? Array.from(ch.code) : [];
+    const bitsArr = ch ? Array.from(bits) : [];
+
     if (ch) {
       pipeline.encodeMessage(this._identityChannel, payload);
       audio.sendSpreadingCode(ch.code);
       audio.sendDataStream(bits);
-      this.renderer.setCodeState(Array.from(ch.code), Array.from(bits), 0);
     }
 
-    // Update the scrolling description text
-    this.renderer.setTextStream(this.crystal.buildDescriptionText());
-
-    // Feed identity into high-dim renderer (camera position in projection space)
+    // Feed into whichever renderer is active
+    if (this.renderer) {
+      this.renderer.setCodeState(codeArr, bitsArr, 0);
+      this.renderer.setTextStream(this.crystal.buildDescriptionText());
+    }
+    if (this.simpleRenderer) {
+      this.simpleRenderer.setCodeState(codeArr, bitsArr);
+    }
     if (this.highDim) {
-      this.highDim.setIdentityVector(
-        this.crystal.otpSeeds,
-        this.crystal.deviceUUID,
-        seed
-      );
-      if (ch) {
-        this.highDim.setCodeState(Array.from(ch.code), Array.from(bits));
-      }
+      this.highDim.setIdentityVector(this.crystal.otpSeeds, this.crystal.deviceUUID, seed);
+      this.highDim.setCodeState(codeArr, bitsArr);
+    }
+    if (this.immersive) {
+      this.immersive.setIdentityVector(this.crystal.otpSeeds, this.crystal.deviceUUID, seed);
+      this.immersive.setCodeState(codeArr, bitsArr);
     }
 
     this._lastSeed = seed;
@@ -350,11 +384,9 @@ class PerceptualMode {
       energy = Math.sqrt(energy / timeDomain.length);
       const rawCoherence = Math.min(1, energy * 5);
       this._coherenceSmooth = this._coherenceSmooth * 0.95 + rawCoherence * 0.05;
-      this.renderer.setCoherence(this._coherenceSmooth);
-
-      // Accrete coherence as entropy (the perceptual feedback loop IS an entropy source)
       this.crystal.accreteCoherence(this._coherenceSmooth);
 
+      // Update coherence bar
       const fill = document.getElementById('coherence-fill');
       const label = document.getElementById('coherence-label');
       if (fill && label) {
@@ -365,17 +397,33 @@ class PerceptualMode {
       }
     }
 
-    // Feed public data into high-dim renderer (renders as background layer)
-    const highDimActive = this.highDim && this.renderer.layers.highDim?.enabled;
-    if (highDimActive) {
-      this.highDim.setPublicVector(this.publicStream.sample());
-      this.highDim.opacity = this.renderer.layers.highDim.opacity;
-      this.highDim.render(dt);
+    // Render based on active mode
+    if (this.mode === 'simple') {
+      if (this.simpleRenderer) {
+        this.simpleRenderer.setCoherence(this._coherenceSmooth);
+        this.simpleRenderer.render(dt, timeDomain);
+      }
+    } else if (this.mode === 'immersive') {
+      if (this.immersive) {
+        this.immersive.setPublicVector(this.publicStream.sample());
+        this.immersive.setCoherence(this._coherenceSmooth);
+        this.immersive.render(dt);
+      }
+    } else {
+      // Layered mode
+      const highDimActive = this.highDim && this.renderer?.layers.highDim?.enabled;
+      if (highDimActive) {
+        this.highDim.setPublicVector(this.publicStream.sample());
+        this.highDim.opacity = this.renderer.layers.highDim.opacity;
+        this.highDim.render(dt);
+      }
+      if (this.renderer) {
+        this.renderer.setCoherence(this._coherenceSmooth);
+        this.renderer.skipBackground = highDimActive;
+        this.renderer.render(dt, timeDomain, frequency);
+      }
     }
 
-    // Visualizer draws on top; skip its background clear if high-dim drew
-    this.renderer.skipBackground = highDimActive;
-    this.renderer.render(dt, timeDomain, frequency);
     this._rafId = requestAnimationFrame(() => this._renderLoop());
   }
 }
@@ -731,9 +779,19 @@ class EngineeringMode {
 const perceptualMode = new PerceptualMode();
 const engineeringMode = new EngineeringMode();
 
-document.getElementById('btn-launch-perceptual').addEventListener('click', () => {
+document.getElementById('btn-launch-simple').addEventListener('click', () => {
   showScreen('perceptual');
-  perceptualMode.start();
+  perceptualMode.start('simple');
+});
+
+document.getElementById('btn-launch-layered').addEventListener('click', () => {
+  showScreen('perceptual');
+  perceptualMode.start('layered');
+});
+
+document.getElementById('btn-launch-immersive').addEventListener('click', () => {
+  showScreen('perceptual');
+  perceptualMode.start('immersive');
 });
 
 document.getElementById('btn-launch-engineering').addEventListener('click', () => {
