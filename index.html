@@ -49,14 +49,27 @@
       </div>
 
       <div id="perceptual-settings-panel" class="perceptual-settings" style="display:none">
-        <h3>Identity Seed</h3>
-        <div class="control-row">
-          <label>Seed</label>
-          <input type="number" id="p-seed" value="42" min="0">
+        <h3>Seed Crystal</h3>
+        <div id="crystal-status" style="font-size:10px;color:var(--text-dim);line-height:1.6;margin-bottom:8px">
+          Loading...
+        </div>
+        <div id="crystal-phrase" style="font-size:13px;color:var(--accent);margin-bottom:8px;font-style:italic;min-height:1.5em">
         </div>
         <div class="control-row">
           <label>Phrase</label>
-          <input type="text" id="p-phrase" placeholder="Your identity phrase...">
+          <span class="value" id="p-phrase-timer" style="width:auto">--</span>
+        </div>
+        <div class="control-row">
+          <label>Seed</label>
+          <span class="value" id="p-seed-timer" style="width:auto">--</span>
+        </div>
+        <div class="control-row">
+          <label>OTP</label>
+          <span class="value" id="p-otp-timer" style="width:auto">--</span>
+        </div>
+        <div class="btn-row" style="margin-bottom:8px">
+          <button id="btn-crystal-export" style="font-size:10px">Export</button>
+          <button id="btn-crystal-reset" class="danger" style="font-size:10px">Reset</button>
         </div>
 
         <h3>Audio</h3>
