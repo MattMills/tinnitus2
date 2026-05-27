@@ -77,16 +77,33 @@ class PerceptualMode {
 
     // Create the appropriate renderer(s) for the mode
     if (this.mode === 'simple') {
-      this.simpleRenderer = new SimpleRenderer(canvas);
-      this.simpleRenderer.resize();
-      this.renderer = null;
+      // Simple = the layered visualizer but calmer defaults, no high-dim field
+      this.renderer = new Visualizer(canvas);
+      // Disable busy layers — keep grid, code circle, waveform ring
+      this.renderer.layers.rings.enabled = false;
+      this.renderer.layers.spirals.enabled = false;
+      this.renderer.layers.particles.enabled = false;
+      this.renderer.layers.bars.enabled = false;
+      this.renderer.layers.lissajous.enabled = false;
+      this.renderer.layers.textStream.enabled = false;
+      this.renderer.layers.highDim.enabled = false;
+      // Softer opacity
+      this.renderer.layers.grid.opacity = 0.5;
+      this.renderer.layers.codeCircle.opacity = 0.4;
+      this.renderer.layers.waveformRing.opacity = 0.4;
       this.highDim = null;
+      this.simpleRenderer = null;
       this.immersive = null;
     } else if (this.mode === 'immersive') {
+      // Immersive = layered visualizer but the background grid is replaced
+      // with the 3D morphing geometry, and we're inside it looking out
+      this.renderer = new Visualizer(canvas);
       this.immersive = new ImmersiveRenderer(canvas);
       this.immersive.resize();
       this.publicStream.start();
-      this.renderer = null;
+      // Disable the flat grid — the immersive 3D field replaces it
+      this.renderer.layers.grid.enabled = false;
+      this.renderer.layers.highDim.enabled = false;
       this.highDim = null;
       this.simpleRenderer = null;
     } else {
@@ -398,22 +415,25 @@ class PerceptualMode {
     }
 
     // Render based on active mode
-    if (this.mode === 'simple') {
-      if (this.simpleRenderer) {
-        this.simpleRenderer.setCoherence(this._coherenceSmooth);
-        this.simpleRenderer.render(dt, timeDomain);
-      }
-    } else if (this.mode === 'immersive') {
+    const pubSample = this.publicStream ? this.publicStream.sample() : null;
+
+    if (this.mode === 'immersive') {
+      // 3D geometry as background, then visualizer layers on top
       if (this.immersive) {
-        this.immersive.setPublicVector(this.publicStream.sample());
+        this.immersive.setPublicVector(pubSample);
         this.immersive.setCoherence(this._coherenceSmooth);
         this.immersive.render(dt);
       }
+      if (this.renderer) {
+        this.renderer.setCoherence(this._coherenceSmooth);
+        this.renderer.skipBackground = true; // immersive already drew bg
+        this.renderer.render(dt, timeDomain, frequency);
+      }
     } else {
-      // Layered mode
+      // Simple and Layered modes
       const highDimActive = this.highDim && this.renderer?.layers.highDim?.enabled;
       if (highDimActive) {
-        this.highDim.setPublicVector(this.publicStream.sample());
+        this.highDim.setPublicVector(pubSample);
         this.highDim.opacity = this.renderer.layers.highDim.opacity;
         this.highDim.render(dt);
       }
