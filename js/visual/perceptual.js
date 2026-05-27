@@ -226,9 +226,9 @@ export class PerceptualRenderer {
 export class PerceptualAudioTuner {
   constructor(audioEngine) {
     this.engine = audioEngine;
-    this._noiseGain = 0.60;
-    this._toneGain = 0.20;
-    this._modulationDepth = 0.80;
+    this._noiseGain = 0.80;
+    this._toneGain = 0.30;
+    this._modulationDepth = 1.0;
     this._baseFreq = 200;
   }
 
