@@ -54,6 +54,8 @@ class PerceptualMode {
 
   async start() {
     await ensureAudio();
+    // Resume if previously suspended (e.g. returning from launch screen)
+    if (audio.ctx && audio.ctx.state === 'suspended') audio.resume();
 
     const canvas = document.getElementById('cv-perceptual');
     this.renderer = new PerceptualRenderer(canvas);
@@ -74,7 +76,10 @@ class PerceptualMode {
   stop() {
     this.running = false;
     if (this._rafId) cancelAnimationFrame(this._rafId);
+    this._rafId = null;
     if (this.tuner) this.tuner.deactivate();
+    // Suspend the audio context so nothing keeps playing
+    if (audio) audio.suspend();
   }
 
   _initIdentitySignal() {
@@ -120,10 +125,11 @@ class PerceptualMode {
       }
     });
 
-    // Back button
+    // Back button — fully destroy audio so nothing keeps playing
     document.getElementById('btn-perceptual-back').addEventListener('click', (e) => {
       e.stopPropagation();
       this.stop();
+      if (audio) { audio.destroy(); audioInitialized = false; audio = null; pipeline = null; }
       showScreen('launch');
     });
 
@@ -150,7 +156,7 @@ class PerceptualMode {
     // Audio controls
     this._bindPerceptualSlider('p-noise-gain', (v) => this.tuner.setNoiseGain(v));
     this._bindPerceptualSlider('p-tone-gain', (v) => this.tuner.setToneGain(v));
-    this._bindPerceptualSlider('p-dsss-gain', (v) => this.tuner.setDSSSGain(v));
+    this._bindPerceptualSlider('p-dsss-gain', (v) => this.tuner.setModulationDepth(v));
     this._bindPerceptualSlider('p-base-freq', (v) => {
       this.tuner.setBaseFreq(v);
       document.getElementById('p-base-freq-val').textContent = Math.round(v);
@@ -293,7 +299,8 @@ class EngineeringMode {
 
     this._bindSlider('noise-gain', (v) => audio.setNoiseGain(v));
     this._bindSlider('master-gain', (v) => audio.setMasterGain(v));
-    this._bindSlider('dsss-gain', (v) => audio.setDSSSGain(v));
+    this._bindSlider('dsss-gain', (v) => audio.setModulationDepth(v));
+    this._bindSlider('dsss-direct', (v) => audio.setDirectDsssGain(v));
 
     this._bindSlider('chip-rate', (v) => {
       const rate = Math.floor(v * 10000) + 100;
