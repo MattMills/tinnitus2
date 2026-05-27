@@ -253,6 +253,36 @@ html, body {
   min-height: 32px;
 }
 
+.layer-ctrl {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 4px;
+  font-size: 10px;
+}
+
+.layer-ctrl label {
+  width: 85px;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--text-dim);
+}
+
+.layer-ctrl input[type="checkbox"] {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+}
+
+.layer-ctrl input[type="range"] {
+  flex: 1;
+  height: 20px;
+  accent-color: var(--accent);
+  min-width: 40px;
+}
+
 .perceptual-bottom-bar {
   padding: 12px 16px 24px;
   background: linear-gradient(0deg, rgba(0,0,0,0.7) 0%, transparent 100%);

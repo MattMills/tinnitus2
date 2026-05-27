@@ -1,6 +1,7 @@
 import { AudioEngine } from './audio/engine.js';
 import { VisualRenderer } from './visual/renderer.js';
-import { PerceptualRenderer, PerceptualAudioTuner } from './visual/perceptual.js';
+import { PerceptualAudioTuner } from './visual/perceptual.js';
+import { Visualizer } from './visual/visualizer.js';
 import { SignalPipeline } from './engine/pipeline.js';
 import { GoldCodeGenerator } from './signal/gold-codes.js';
 import { SeedCrystal } from './engine/seed-crystal.js';
@@ -63,7 +64,7 @@ class PerceptualMode {
     const existed = this.crystal.load();
 
     const canvas = document.getElementById('cv-perceptual');
-    this.renderer = new PerceptualRenderer(canvas);
+    this.renderer = new Visualizer(canvas);
     this.tuner = new PerceptualAudioTuner(audio);
 
     window.addEventListener('resize', () => this.renderer.resize());
@@ -212,19 +213,6 @@ class PerceptualMode {
     });
 
     // Visual controls
-    this._bindPerceptualSlider('p-chip-rate', (v) => {
-      this.renderer.chipRate = v;
-      audio.setChipRate(v * pipeline.goldGen.codeLength);
-      document.getElementById('p-chip-rate-val').textContent = Math.round(v) + ' Hz';
-    });
-    this._bindPerceptualSlider('p-intensity', (v) => {
-      this.renderer.intensity = v;
-    });
-    this._bindPerceptualSlider('p-grid', (v) => {
-      this.renderer.gridSize = Math.round(v);
-      document.getElementById('p-grid-val').textContent = Math.round(v);
-    });
-
     document.getElementById('p-color-mode').addEventListener('change', (e) => {
       this.renderer.colorMode = e.target.value;
     });
@@ -233,12 +221,21 @@ class PerceptualMode {
       audio.setNoiseType(parseInt(e.target.value));
     });
 
-    // Fractal controls (will connect to fractal module when loaded)
-    this._bindPerceptualSlider('p-fractal-levels', (v) => {
-      document.getElementById('p-fractal-levels-val').textContent = Math.round(v);
+    // Layer controls — toggle, opacity, scale for each visual layer
+    document.querySelectorAll('[data-layer-toggle]').forEach(el => {
+      el.addEventListener('change', () => {
+        this.renderer.setLayerEnabled(el.dataset.layerToggle, el.checked);
+      });
     });
-    this._bindPerceptualSlider('p-hop-interval', (v) => {
-      document.getElementById('p-hop-interval-val').textContent = Math.round(v / 1000) + 's';
+    document.querySelectorAll('[data-layer-opacity]').forEach(el => {
+      el.addEventListener('input', () => {
+        this.renderer.setLayerOpacity(el.dataset.layerOpacity, parseFloat(el.value));
+      });
+    });
+    document.querySelectorAll('[data-layer-scale]').forEach(el => {
+      el.addEventListener('input', () => {
+        this.renderer.setLayerScale(el.dataset.layerScale, parseFloat(el.value));
+      });
     });
   }
 
