@@ -1,4 +1,5 @@
 import { AudioEngine } from './audio/engine.js';
+import { AudioLayerEngine } from './audio/audio-layers.js';
 import { VisualRenderer } from './visual/renderer.js';
 import { PerceptualAudioTuner } from './visual/perceptual.js';
 import { Visualizer } from './visual/visualizer.js';
@@ -51,6 +52,7 @@ class PerceptualMode {
     this.crystal = new SeedCrystal();
     this.harvester = new SensorHarvester();
     this.publicStream = new PublicDataStream();
+    this.audioLayers = null;
     this.highDim = null;
     this.immersive = null;
     this.simpleRenderer = null;
@@ -130,6 +132,10 @@ class PerceptualMode {
     this._updateCrystalDisplay();
     this.tuner.activate();
 
+    // Init multi-layer audio engine
+    this.audioLayers = new AudioLayerEngine(audio.ctx);
+    this.audioLayers.init(audio.masterGain, audio.analyser);
+
     // Start sensor harvester — all entropy feeds into identity
     this.harvester.onEntropy((value, source) => {
       this.crystal.accrete(value);
@@ -147,6 +153,7 @@ class PerceptualMode {
     if (this._rafId) cancelAnimationFrame(this._rafId);
     this._rafId = null;
     if (this.tuner) this.tuner.deactivate();
+    if (this.audioLayers) { this.audioLayers.destroy(); this.audioLayers = null; }
     this.harvester.stopAll();
     this.publicStream.stop();
     if (audio) audio.suspend();
@@ -197,6 +204,12 @@ class PerceptualMode {
     if (this.immersive) {
       this.immersive.setIdentityVector(this.crystal.otpSeeds, this.crystal.deviceUUID, seed);
       this.immersive.setCodeState(codeArr, bitsArr);
+    }
+
+    // Feed audio layers
+    if (this.audioLayers) {
+      this.audioLayers.setCodeState(codeArr, bitsArr);
+      this.audioLayers.setPhrase(this.crystal.currentPhrase);
     }
 
     this._activeCode = codeArr;
@@ -355,6 +368,18 @@ class PerceptualMode {
       el.addEventListener('change', () => {
         this.harvester.setSourceEnabled(el.dataset.sensorToggle, el.checked);
         this._updateSensorDisplay();
+      });
+    });
+
+    // Audio layer toggles and gains
+    document.querySelectorAll('[data-audio-toggle]').forEach(el => {
+      el.addEventListener('change', () => {
+        if (this.audioLayers) this.audioLayers.setLayerEnabled(el.dataset.audioToggle, el.checked);
+      });
+    });
+    document.querySelectorAll('[data-audio-gain]').forEach(el => {
+      el.addEventListener('input', () => {
+        if (this.audioLayers) this.audioLayers.setLayerGain(el.dataset.audioGain, parseFloat(el.value));
       });
     });
   }
