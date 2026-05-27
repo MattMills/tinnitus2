@@ -1,8 +1,10 @@
 import { AudioEngine } from './audio/engine.js';
 import { VisualRenderer } from './visual/renderer.js';
-import { PerceptualRenderer, PerceptualAudioTuner } from './visual/perceptual.js';
+import { PerceptualAudioTuner } from './visual/perceptual.js';
+import { Visualizer } from './visual/visualizer.js';
 import { SignalPipeline } from './engine/pipeline.js';
 import { GoldCodeGenerator } from './signal/gold-codes.js';
+import { SeedCrystal } from './engine/seed-crystal.js';
 
 // ================================================================
 // Mode management
@@ -41,31 +43,40 @@ class PerceptualMode {
   constructor() {
     this.renderer = null;
     this.tuner = null;
+    this.crystal = new SeedCrystal();
     this.running = false;
     this._rafId = null;
     this._lastTime = 0;
     this._overlayVisible = true;
     this._settingsVisible = false;
-    this._identitySeed = 42;
-    this._identityPhrase = '';
     this._identityChannel = null;
     this._coherenceSmooth = 0;
+    this._lastSeed = 0;
+    this._userSeedText = '';
+    this._controlsBound = false;
   }
 
   async start() {
     await ensureAudio();
-    // Resume if previously suspended (e.g. returning from launch screen)
     if (audio.ctx && audio.ctx.state === 'suspended') audio.resume();
 
+    // Load or create seed crystal
+    const existed = this.crystal.load();
+
     const canvas = document.getElementById('cv-perceptual');
-    this.renderer = new PerceptualRenderer(canvas);
+    this.renderer = new Visualizer(canvas);
     this.tuner = new PerceptualAudioTuner(audio);
 
     window.addEventListener('resize', () => this.renderer.resize());
     this.renderer.resize();
 
-    this._bindControls();
-    this._initIdentitySignal();
+    if (!this._controlsBound) {
+      this._bindControls();
+      this._controlsBound = true;
+    }
+
+    this._applyIdentity();
+    this._updateCrystalDisplay();
     this.tuner.activate();
 
     this.running = true;
@@ -78,44 +89,75 @@ class PerceptualMode {
     if (this._rafId) cancelAnimationFrame(this._rafId);
     this._rafId = null;
     if (this.tuner) this.tuner.deactivate();
-    // Suspend the audio context so nothing keeps playing
     if (audio) audio.suspend();
   }
 
-  _initIdentitySignal() {
-    const seed = this._identitySeed;
-    const phrase = this._identityPhrase || 'identity';
+  _applyIdentity() {
+    const seed = this.crystal.activeSeed;
+    const otpSeed = this.crystal.activeOtpSeed;
+    const payload = this.crystal.buildDataPayload(this._userSeedText || '');
 
-    pipeline.setOTPSeed(seed);
-    this._identityChannel = pipeline.createChannel('SELF', seed % pipeline.goldGen.codeLength);
-
-    const bits = pipeline.textToBits(phrase);
-    const ch = pipeline.channels.get(this._identityChannel);
-    if (ch) {
-      pipeline.encodeMessage(this._identityChannel, phrase);
-      audio.sendSpreadingCode(ch.code);
-      audio.sendDataStream(bits);
-
-      // Set perceptual renderer code state
-      this.renderer.setCodeState(
-        Array.from(ch.code),
-        Array.from(bits),
-        0
-      );
-    }
-  }
-
-  _reInitIdentity() {
-    // Remove old channel
+    // Remove old channel if exists
     if (this._identityChannel !== null) {
       pipeline.removeChannel(this._identityChannel);
     }
-    this._initIdentitySignal();
+
+    pipeline.setOTPSeed(otpSeed);
+    this._identityChannel = pipeline.createChannel('SELF', seed % pipeline.goldGen.codeLength);
+
+    const bits = pipeline.textToBits(payload);
+    const ch = pipeline.channels.get(this._identityChannel);
+    if (ch) {
+      pipeline.encodeMessage(this._identityChannel, payload);
+      audio.sendSpreadingCode(ch.code);
+      audio.sendDataStream(bits);
+      this.renderer.setCodeState(Array.from(ch.code), Array.from(bits), 0);
+    }
+
+    // Update the scrolling description text
+    this.renderer.setTextStream(this.crystal.buildDescriptionText());
+
+    this._lastSeed = seed;
+  }
+
+  _updateCrystalDisplay() {
+    const summary = this.crystal.getSummary();
+    const statusEl = document.getElementById('crystal-status');
+    const phraseEl = document.getElementById('crystal-phrase');
+    if (statusEl) {
+      statusEl.innerHTML = [
+        `Session #${summary.sessionCount}`,
+        `Created: ${summary.created}`,
+        `Accretions: ${summary.accretionDepth}`,
+        `Worldpath: ${summary.worldpathLength} pts`,
+        `OTP layer: ${summary.activeOtpIndex + 1}/${this.crystal.otpSeeds.length}`,
+      ].join(' &middot; ');
+    }
+    if (phraseEl) {
+      phraseEl.textContent = `"${summary.currentPhrase}"`;
+    }
+
+    // Rotation timers
+    const state = this.crystal._state;
+    if (state) {
+      const now = Date.now();
+      const phraseLeft = Math.max(0, Math.ceil((state.phraseRotationInterval - (now - state.lastPhraseRotation)) / 1000));
+      const seedLeft = Math.max(0, Math.ceil((state.seedRotationInterval - (now - state.lastSeedRotation)) / 1000));
+      const otpLeft = Math.max(0, Math.ceil((state.otpRotationInterval - (now - state.lastOtpRotation)) / 1000));
+
+      const pt = document.getElementById('p-phrase-timer');
+      const st = document.getElementById('p-seed-timer');
+      const ot = document.getElementById('p-otp-timer');
+      if (pt) pt.textContent = `${phraseLeft}s`;
+      if (st) st.textContent = `${seedLeft}s`;
+      if (ot) ot.textContent = `${otpLeft}s`;
+    }
   }
 
   _bindControls() {
-    // Tap canvas to toggle overlay
-    document.getElementById('cv-perceptual').addEventListener('click', () => {
+    // Tap canvas to toggle overlay — also accretes touch entropy
+    document.getElementById('cv-perceptual').addEventListener('click', (e) => {
+      this.crystal.accreteTouch(e);
       this._overlayVisible = !this._overlayVisible;
       const overlay = document.getElementById('perceptual-overlay');
       overlay.classList.toggle('hidden', !this._overlayVisible);
@@ -125,7 +167,7 @@ class PerceptualMode {
       }
     });
 
-    // Back button — fully destroy audio so nothing keeps playing
+    // Back button
     document.getElementById('btn-perceptual-back').addEventListener('click', (e) => {
       e.stopPropagation();
       this.stop();
@@ -141,16 +183,39 @@ class PerceptualMode {
         this._settingsVisible ? '' : 'none';
     });
 
-    // Identity controls
-    const seedInput = document.getElementById('p-seed');
-    const phraseInput = document.getElementById('p-phrase');
-    seedInput.addEventListener('change', () => {
-      this._identitySeed = parseInt(seedInput.value) || 42;
-      this._reInitIdentity();
+    // Crystal controls
+    document.getElementById('btn-crystal-export')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const data = this.crystal.export();
+      const blob = new Blob([data], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `tinnitus-identity-${Date.now()}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
     });
-    phraseInput.addEventListener('change', () => {
-      this._identityPhrase = phraseInput.value;
-      this._reInitIdentity();
+
+    document.getElementById('btn-crystal-reset')?.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (confirm('Reset identity? This destroys your seed crystal and all accretions.')) {
+        this.crystal.reset();
+        this._applyIdentity();
+        this._updateCrystalDisplay();
+      }
+    });
+
+    // User seed overlay — text → hash → XOR with true seed
+    document.getElementById('p-user-seed')?.addEventListener('input', (e) => {
+      this._userSeedText = e.target.value;
+      this.crystal.setUserSeed(e.target.value || null);
+      this._applyIdentity();
+    });
+
+    // Device info toggle
+    document.getElementById('p-embed-device')?.addEventListener('change', (e) => {
+      this.crystal.setEmbedDeviceInfo(e.target.checked);
+      this._applyIdentity();
     });
 
     // Audio controls
@@ -163,19 +228,6 @@ class PerceptualMode {
     });
 
     // Visual controls
-    this._bindPerceptualSlider('p-chip-rate', (v) => {
-      this.renderer.chipRate = v;
-      audio.setChipRate(v * pipeline.goldGen.codeLength);
-      document.getElementById('p-chip-rate-val').textContent = Math.round(v) + ' Hz';
-    });
-    this._bindPerceptualSlider('p-intensity', (v) => {
-      this.renderer.intensity = v;
-    });
-    this._bindPerceptualSlider('p-grid', (v) => {
-      this.renderer.gridSize = Math.round(v);
-      document.getElementById('p-grid-val').textContent = Math.round(v);
-    });
-
     document.getElementById('p-color-mode').addEventListener('change', (e) => {
       this.renderer.colorMode = e.target.value;
     });
@@ -184,12 +236,21 @@ class PerceptualMode {
       audio.setNoiseType(parseInt(e.target.value));
     });
 
-    // Fractal controls (will connect to fractal module when loaded)
-    this._bindPerceptualSlider('p-fractal-levels', (v) => {
-      document.getElementById('p-fractal-levels-val').textContent = Math.round(v);
+    // Layer controls — toggle, opacity, scale for each visual layer
+    document.querySelectorAll('[data-layer-toggle]').forEach(el => {
+      el.addEventListener('change', () => {
+        this.renderer.setLayerEnabled(el.dataset.layerToggle, el.checked);
+      });
     });
-    this._bindPerceptualSlider('p-hop-interval', (v) => {
-      document.getElementById('p-hop-interval-val').textContent = Math.round(v / 1000) + 's';
+    document.querySelectorAll('[data-layer-opacity]').forEach(el => {
+      el.addEventListener('input', () => {
+        this.renderer.setLayerOpacity(el.dataset.layerOpacity, parseFloat(el.value));
+      });
+    });
+    document.querySelectorAll('[data-layer-scale]').forEach(el => {
+      el.addEventListener('input', () => {
+        this.renderer.setLayerScale(el.dataset.layerScale, parseFloat(el.value));
+      });
     });
   }
 
@@ -214,10 +275,22 @@ class PerceptualMode {
     const dt = (now - this._lastTime) / 1000;
     this._lastTime = now;
 
+    // Tick the seed crystal — handles automatic rotations
+    const rotated = this.crystal.tick(Date.now());
+    if (rotated) {
+      // Something rotated — re-apply identity with new params
+      this._applyIdentity();
+      this._updateCrystalDisplay();
+    }
+    // Update rotation timers every ~second
+    if (Math.floor(now / 1000) !== Math.floor((now - dt * 1000) / 1000)) {
+      this._updateCrystalDisplay();
+    }
+
     const timeDomain = audio.getTimeDomainData();
     const frequency = audio.getFrequencyData();
 
-    // Compute coherence from audio signal energy in DSSS band
+    // Compute coherence and accrete it as entropy
     if (timeDomain) {
       let energy = 0;
       for (let i = 0; i < timeDomain.length; i++) {
@@ -228,7 +301,9 @@ class PerceptualMode {
       this._coherenceSmooth = this._coherenceSmooth * 0.95 + rawCoherence * 0.05;
       this.renderer.setCoherence(this._coherenceSmooth);
 
-      // Update coherence bar
+      // Accrete coherence as entropy (the perceptual feedback loop IS an entropy source)
+      this.crystal.accreteCoherence(this._coherenceSmooth);
+
       const fill = document.getElementById('coherence-fill');
       const label = document.getElementById('coherence-label');
       if (fill && label) {

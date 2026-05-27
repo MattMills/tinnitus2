@@ -49,14 +49,35 @@
       </div>
 
       <div id="perceptual-settings-panel" class="perceptual-settings" style="display:none">
-        <h3>Identity Seed</h3>
-        <div class="control-row">
-          <label>Seed</label>
-          <input type="number" id="p-seed" value="42" min="0">
+        <h3>Seed Crystal</h3>
+        <div id="crystal-status" style="font-size:10px;color:var(--text-dim);line-height:1.6;margin-bottom:8px">
+          Loading...
+        </div>
+        <div id="crystal-phrase" style="font-size:13px;color:var(--accent);margin-bottom:8px;font-style:italic;min-height:1.5em">
         </div>
         <div class="control-row">
           <label>Phrase</label>
-          <input type="text" id="p-phrase" placeholder="Your identity phrase...">
+          <span class="value" id="p-phrase-timer" style="width:auto">--</span>
+        </div>
+        <div class="control-row">
+          <label>Seed</label>
+          <span class="value" id="p-seed-timer" style="width:auto">--</span>
+        </div>
+        <div class="control-row">
+          <label>OTP</label>
+          <span class="value" id="p-otp-timer" style="width:auto">--</span>
+        </div>
+        <div class="control-row">
+          <label>Your Seed</label>
+          <input type="text" id="p-user-seed" placeholder="Type text to overlay as seed...">
+        </div>
+        <div class="control-row">
+          <label>Device Info</label>
+          <input type="checkbox" id="p-embed-device" checked>
+        </div>
+        <div class="btn-row" style="margin-bottom:8px">
+          <button id="btn-crystal-export" style="font-size:10px">Export</button>
+          <button id="btn-crystal-reset" class="danger" style="font-size:10px">Reset</button>
         </div>
 
         <h3>Audio</h3>
@@ -83,26 +104,11 @@
 
         <h3>Visual</h3>
         <div class="control-row">
-          <label>Chip Rate</label>
-          <input type="range" id="p-chip-rate" min="5" max="200" step="1" value="40">
-          <span class="value" id="p-chip-rate-val">40 Hz</span>
-        </div>
-        <div class="control-row">
-          <label>Intensity</label>
-          <input type="range" id="p-intensity" min="0.1" max="1" step="0.05" value="0.8">
-          <span class="value" id="p-intensity-val">0.80</span>
-        </div>
-        <div class="control-row">
-          <label>Grid</label>
-          <input type="range" id="p-grid" min="8" max="48" step="4" value="16">
-          <span class="value" id="p-grid-val">16</span>
-        </div>
-        <div class="control-row">
           <label>Color</label>
           <select id="p-color-mode">
+            <option value="spectrum">Spectrum</option>
             <option value="warm">Warm</option>
             <option value="cool">Cool</option>
-            <option value="spectrum">Spectrum</option>
           </select>
         </div>
         <div class="control-row">
@@ -114,16 +120,53 @@
           </select>
         </div>
 
-        <h3>Fractal Layers</h3>
-        <div class="control-row">
-          <label>Levels</label>
-          <input type="range" id="p-fractal-levels" min="1" max="6" step="1" value="4">
-          <span class="value" id="p-fractal-levels-val">4</span>
-        </div>
-        <div class="control-row">
-          <label>Meta Hop</label>
-          <input type="range" id="p-hop-interval" min="1000" max="30000" step="1000" value="5000">
-          <span class="value" id="p-hop-interval-val">5s</span>
+        <h3>Layers</h3>
+        <div id="layer-controls">
+          <div class="layer-ctrl" data-layer="grid">
+            <label><input type="checkbox" data-layer-toggle="grid" checked> Grid</label>
+            <input type="range" data-layer-opacity="grid" min="0" max="1" step="0.05" value="0.6">
+            <input type="range" data-layer-scale="grid" min="0.2" max="2" step="0.1" value="1.0">
+          </div>
+          <div class="layer-ctrl" data-layer="rings">
+            <label><input type="checkbox" data-layer-toggle="rings" checked> Rings</label>
+            <input type="range" data-layer-opacity="rings" min="0" max="1" step="0.05" value="0.5">
+            <input type="range" data-layer-scale="rings" min="0.2" max="2" step="0.1" value="1.0">
+          </div>
+          <div class="layer-ctrl" data-layer="codeCircle">
+            <label><input type="checkbox" data-layer-toggle="codeCircle" checked> Code Ring</label>
+            <input type="range" data-layer-opacity="codeCircle" min="0" max="1" step="0.05" value="0.5">
+            <input type="range" data-layer-scale="codeCircle" min="0.2" max="2" step="0.1" value="1.0">
+          </div>
+          <div class="layer-ctrl" data-layer="waveformRing">
+            <label><input type="checkbox" data-layer-toggle="waveformRing" checked> Waveform</label>
+            <input type="range" data-layer-opacity="waveformRing" min="0" max="1" step="0.05" value="0.5">
+            <input type="range" data-layer-scale="waveformRing" min="0.2" max="2" step="0.1" value="1.0">
+          </div>
+          <div class="layer-ctrl" data-layer="spirals">
+            <label><input type="checkbox" data-layer-toggle="spirals" checked> Spirals</label>
+            <input type="range" data-layer-opacity="spirals" min="0" max="1" step="0.05" value="0.4">
+            <input type="range" data-layer-scale="spirals" min="0.2" max="2" step="0.1" value="1.0">
+          </div>
+          <div class="layer-ctrl" data-layer="particles">
+            <label><input type="checkbox" data-layer-toggle="particles"> Particles</label>
+            <input type="range" data-layer-opacity="particles" min="0" max="1" step="0.05" value="0.4">
+            <input type="range" data-layer-scale="particles" min="0.2" max="2" step="0.1" value="1.0">
+          </div>
+          <div class="layer-ctrl" data-layer="bars">
+            <label><input type="checkbox" data-layer-toggle="bars"> Freq Bars</label>
+            <input type="range" data-layer-opacity="bars" min="0" max="1" step="0.05" value="0.5">
+            <input type="range" data-layer-scale="bars" min="0.2" max="2" step="0.1" value="1.0">
+          </div>
+          <div class="layer-ctrl" data-layer="lissajous">
+            <label><input type="checkbox" data-layer-toggle="lissajous"> Lissajous</label>
+            <input type="range" data-layer-opacity="lissajous" min="0" max="1" step="0.05" value="0.5">
+            <input type="range" data-layer-scale="lissajous" min="0.2" max="2" step="0.1" value="1.0">
+          </div>
+          <div class="layer-ctrl" data-layer="textStream">
+            <label><input type="checkbox" data-layer-toggle="textStream" checked> Text</label>
+            <input type="range" data-layer-opacity="textStream" min="0" max="1" step="0.05" value="0.7">
+            <input type="range" data-layer-scale="textStream" min="0.5" max="3" step="0.1" value="1.0">
+          </div>
         </div>
       </div>
 
